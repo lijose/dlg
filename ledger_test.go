@@ -824,7 +824,7 @@ func TestModelTemplates(t *testing.T) {
 		m           ModelPreset
 	}{
 		{"claude", "--model opus[1m] --effort high", ModelPreset{Model: "opus", Context: "1m", Effort: "high"}},
-		{"codex", "-m gpt-5 -c model_context_window=200000 -c model_reasoning_effort=low", ModelPreset{Model: "gpt-5", Context: "200k", Effort: "low"}},
+		{"codex", "-m gpt-6-luna -c model_context_window=200000 -c model_reasoning_effort=low", ModelPreset{Model: "gpt-6-luna", Context: "200k", Effort: "low"}},
 	} {
 		if got, err := renderArgs(c.agent, c.m); err != nil || got != c.want {
 			t.Errorf("%s: got %q, %v; want %q", c.agent, got, err, c.want)
@@ -883,24 +883,52 @@ func templatesVerified() bool {
 
 // P15: unverified entries render nothing and are refused by add-model, init-models and runs.
 func TestUnverifiedEntriesAreRefused(t *testing.T) {
-	if templatesVerified() {
-		t.Skip("all templates verified")
+	for _, field := range []string{"model", "effort", "context"} {
+		t.Run(field, func(t *testing.T) {
+			withVerifiedTemplates(t)
+			at := agentTemplates["codex"]
+			switch field {
+			case "model":
+				at.Model.Verified = false
+			case "effort":
+				at.Effort.Verified = false
+			case "context":
+				c := at.Contexts["200k"]
+				c.Verified = false
+				at.Contexts["200k"] = c
+			}
+			agentTemplates["codex"] = at
+			m := ModelPreset{Key: "u", Model: "gpt-6-luna", Context: "200k", Effort: "low"}
+			if got, err := renderArgs("codex", m); err == nil || got != "" {
+				t.Errorf("rendered %q, %v", got, err)
+			}
+			if _, err := validatePreset("codex", m); err == nil {
+				t.Error("add-model accepted an unverified entry")
+			}
+			if seeded, _ := seedPresets("codex", "1"); len(seeded) != 0 {
+				t.Error("init-models seeded unverified entries")
+			}
+			cfg := defaultSettings()
+			cfg.PrimaryCommand = "codex exec"
+			cfg.Models = []ModelPreset{m}
+			if _, _, err := resolveModel(cfg, "u", false); err == nil {
+				t.Error("a run resolved an unverified preset")
+			}
+		})
 	}
-	m := ModelPreset{Key: "u", Model: "gpt-5", Context: "200k", Effort: "high"} // codex is still unverified
-	if got, err := renderArgs("codex", m); err == nil || got != "" {
-		t.Errorf("rendered %q, %v", got, err)
+}
+
+func TestCodexReleasePreset(t *testing.T) {
+	seeded, refused := seedPresets("codex", "codex-cli 0.157.1")
+	if len(refused) != 0 || len(seeded) != 1 {
+		t.Fatalf("seeded %v, refused %v", seeded, refused)
 	}
-	if _, err := validatePreset("codex", m); err == nil {
-		t.Error("add-model accepted an unverified entry")
+	m := seeded[0]
+	if m.Model != "gpt-6-luna" || m.Context != "200k" || m.Effort != "low" {
+		t.Fatalf("unexpected release preset: %+v", m)
 	}
-	if seeded, _ := seedPresets("codex", "1"); len(seeded) != 0 {
-		t.Error("init-models seeded unverified entries")
-	}
-	cfg := defaultSettings()
-	cfg.PrimaryCommand = "codex exec"
-	cfg.Models = []ModelPreset{m}
-	if _, _, err := resolveModel(cfg, "u", false); err == nil {
-		t.Error("a run resolved an unverified preset")
+	if _, err := renderArgs("codex", ModelPreset{Model: m.Model, Context: "1m"}); err == nil {
+		t.Fatal("unverified 1m context accepted")
 	}
 }
 

@@ -30,8 +30,8 @@ type agentTmpl struct {
 	Contexts map[string]ctxTmpl
 }
 
-// agentTemplates: the flag literals are still to be verified against the installed CLIs
-// (TestTemplatesVerified is the release gate); every entry is unverified until then.
+// agentTemplates contains checked CLI syntax. TestTemplatesVerified gates releases.
+// Verification covers argument compatibility, not availability on every user's account.
 var agentTemplates = map[string]agentTmpl{
 	"claude": { // verified against Claude Code 2.1.304: --model opus|sonnet[1m], --effort low
 		Model:  tmpl{true, "--model %s"},
@@ -41,12 +41,11 @@ var agentTemplates = map[string]agentTmpl{
 			"1m":   {Verified: true, ModelSuffix: "[1m]"},
 		},
 	},
-	"codex": {
-		Model:  tmpl{false, "-m %s"},
-		Effort: tmpl{false, "-c model_reasoning_effort=%s"},
+	"codex": { // Codex CLI 0.157.1: gpt-6-luna, low effort, 200k override smoke-tested.
+		Model:  tmpl{true, "-m %s"},
+		Effort: tmpl{true, "-c model_reasoning_effort=%s"},
 		Contexts: map[string]ctxTmpl{
-			"200k": {Verified: false, Args: "-c model_context_window=200000"},
-			"1m":   {Verified: false, Args: "-c model_context_window=1000000"},
+			"200k": {Verified: true, Args: "-c model_context_window=200000"},
 		},
 	},
 }
@@ -61,7 +60,7 @@ var knownCaps = map[string]map[string]modelCaps{
 		"opus":   {[]string{"200k", "1m"}, []string{"low", "medium", "high"}},
 	},
 	"codex": {
-		"gpt-5": {[]string{"200k"}, []string{"low", "medium", "high"}},
+		"gpt-6-luna": {[]string{"200k"}, []string{"low"}},
 	},
 }
 

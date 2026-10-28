@@ -295,6 +295,10 @@ make dist     # static binaries in dist/
 
 **Releasing:** push a tag such as `v0.1.0`. `.github/workflows/release.yml` runs the tests with `DLG_RELEASE=1` (including the agent-template verification gate), builds every binary with that version, writes `SHA256SUMS`, and publishes a GitHub release. All template flags must be verified before this gate passes. CI (`ci.yml`) runs `go vet` and `go test` on Linux, macOS and Windows for every push to `main` and every pull request.
 
+Codex template syntax was checked with Codex CLI 0.157.1. On 2026-10-28, a read-only smoke test with `-m gpt-6-luna -c model_reasoning_effort=low -c model_context_window=200000` completed successfully. This is the seeded Codex preset; model access depends on the user's account. The previous `gpt-5` seed was rejected by the tested ChatGPT account. Existing saved presets are not migrated automatically.
+
+The Codex context setting overrides local context accounting; it does not increase a model's actual capacity. The unverified Codex `1m` template is omitted. Omit `--context` when adding a preset to use the CLI's model defaults, or supply raw CLI arguments after `--` for other supported models and settings.
+
 | Target OS | File in `dist/` |
 |---|---|
 | macOS Apple Silicon / Intel | `dlg-darwin-arm64` / `dlg-darwin-amd64` |
