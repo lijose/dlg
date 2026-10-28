@@ -1,0 +1,20 @@
+# Local decision records and machine-specific settings
+.decision-ledger/
+.env
+.env.*
+!.env.example
+.aws/
+.codex/
+.agents/
+
+# Build output
+/dlg
+/dlg.exe
+/dist/
+*.test
+coverage.out
+
+# OS/archive metadata
+.DS_Store
+__MACOSX/
+._*

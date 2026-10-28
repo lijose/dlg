@@ -1,0 +1,1200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decision Ledger</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f3f1ec; --bg: light-dark(#f3f1ec, #141311);
+    --surface: #fffcf7; --surface: light-dark(#fffcf7, #1c1a17);
+    --surface-2: #f3efe8; --surface-2: light-dark(#f3efe8, #2a261f);
+    --ink: #1c1915; --ink: light-dark(#1c1915, #f4f0e8);
+    --muted: #5c564f; --muted: light-dark(#5c564f, #c8bfb4);
+    --line: #e3dfd6; --line: light-dark(#e3dfd6, #3c352c);
+    --accent: #1e4fd0; --accent: light-dark(#1e4fd0, #9db6ff);
+    --accent-ink: #fff; --accent-ink: light-dark(#fff, #14161c);
+    --accent-hover: #183fa6; --accent-hover: light-dark(#183fa6, #c5d4ff);
+    --ok: #1c6b38; --ok: light-dark(#1c6b38, #8fd4a4);
+    --ok-bg: #e5f3ea; --ok-bg: light-dark(#e5f3ea, #1a2c22);
+    --warn: #8a4b12; --warn: light-dark(#8a4b12, #f0c08a);
+    --warn-bg: #f8ecdf; --warn-bg: light-dark(#f8ecdf, #3a2a1c);
+    --info: #1d3f86; --info: light-dark(#1d3f86, #b9cffc);
+    --info-bg: #e7eefb; --info-bg: light-dark(#e7eefb, #1c2638);
+    --amber-bg: #fbf3e2; --amber-bg: light-dark(#fbf3e2, #332916);
+    --amber-ink: #6d4208; --amber-ink: light-dark(#6d4208, #f3d7a6);
+    --danger: #9d1230; --danger: light-dark(#9d1230, #ffb4c0);
+    --danger-bg: #fdecee; --danger-bg: light-dark(#fdecee, #3a1c22);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 ui-sans-serif, system-ui, sans-serif; color:var(--ink); background:var(--bg); }
+  header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 16px; background:var(--surface); color:var(--ink); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; font-weight:600; margin:0 auto 0 0; }
+  header h1::before { content:""; display:inline-block; width:10px; height:10px; margin-right:8px; background:var(--accent); border-radius:2px; vertical-align:1px; }
+  #layout { display:grid; grid-template-columns:var(--side, 260px) 5px minmax(0, 1fr); height:calc(100vh - 53px); }
+  #layout.collapsed { grid-template-columns:44px 0 minmax(0, 1fr); }
+  #layout.collapsed aside { padding:10px 6px; }
+  #layout.collapsed aside > :not(.side-top), #layout.collapsed .side-top > :not(#collapseBtn) { display:none; }
+  aside { padding:12px; overflow:auto; background:var(--surface); }
+  #resizer { cursor:col-resize; border-left:1px solid var(--line); touch-action:none; }
+  #resizer:hover, #resizer.drag { background:var(--line); }
+  .side-top { margin-top:0; }
+  .tree .node { display:flex; align-items:center; gap:4px; border-radius:8px; padding-right:2px; }
+  .tree .node:hover, .tree .node.active { background:var(--surface-2); }
+  .tree .node button.title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:4px 2px; }
+  .tree .node.active button.title { font-weight:600; }
+  .twisty { width:18px; flex:none; padding:0; border:none; background:none; color:var(--muted); font-size:13px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--muted); }
+  .dot.open { background:var(--info); } .dot.selected { background:var(--amber-ink); }
+  .dot.approved, .dot.sent { background:var(--ok); } .dot.deferred { background:var(--line); }
+  .needs { color:var(--warn); font-size:11px; flex:none; }
+  .tree .more { flex:none; border:none; background:none; padding:0 6px; color:var(--muted); opacity:0; }
+  .tree .node:hover .more, .tree .more[aria-expanded=true], .tree .more:focus-visible { opacity:1; }
+  .menu { margin:2px 0 8px 22px; padding:4px 8px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+  .menu .row { margin:6px 0; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; flex:none; }
+  .seg button { border:none; border-radius:0; padding:3px 10px; font-size:13px; }
+  .seg button[aria-pressed=true] { background:var(--surface-2); font-weight:600; }
+  .strip { position:sticky; top:-28px; z-index:5; background:var(--bg); margin:0 -32px 20px; padding:12px 32px 0; border-bottom:1px solid var(--line); }
+  .strip .row { margin:4px 0; }
+  .waits { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 10px; }
+  .wait-chip { font-size:13px; padding:2px 10px; border-radius:999px; border:1px solid var(--line); background:var(--surface); }
+  .wait-chip.you { background:var(--amber-bg); color:var(--amber-ink); }
+  .wait-chip.them { background:var(--info-bg); color:var(--info); }
+  .wait-chip.busy { background:var(--ok-bg); color:var(--ok); }
+  .tabs { display:flex; gap:2px; overflow-x:auto; margin-bottom:-1px; }
+  .tabs button { border:none; border-bottom:2px solid transparent; border-radius:0; background:none; padding:8px 12px; white-space:nowrap; color:var(--muted); }
+  .tabs button[aria-selected=true] { color:var(--ink); font-weight:600; border-bottom-color:var(--accent); }
+  .tabs .meta { margin-left:4px; }
+  .pt > .head { display:grid; grid-template-columns:14px 36px minmax(0, 1.4fr) minmax(0, 1fr) auto; gap:10px; align-items:center; width:100%; text-align:left; border:none; border-bottom:1px solid var(--line); border-radius:0; background:none; padding:8px 6px; }
+  .pt.disputed > .head { background:var(--warn-bg); }
+  .pt > .head:hover:not(:disabled) { background:var(--surface-2); }
+  .clip { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pt > .body { padding:8px 6px 14px 30px; border-bottom:1px solid var(--line); background:var(--surface); }
+  .pos { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:6px 14px; margin-bottom:10px; }
+  .pos > b { font-weight:500; color:var(--muted); font-size:13px; }
+  main { padding:28px 32px 64px; overflow:auto; }
+  ul.tree { list-style:none; padding-left:14px; margin:4px 0; }
+  aside > ul.tree { padding-left:0; }
+  .tree button.link { display:inline-block; color:var(--ink); text-align:left; padding:4px 8px; border-radius:8px; }
+  .tree li { margin:2px 0; }
+  .tree button.link.active { font-weight:600; color:var(--ink); background:var(--surface-2); }
+  section { background:transparent; border:none; border-radius:0; padding:0; margin:0 0 28px; }
+  section h2 { font-size:15px; font-weight:600; margin:0 0 12px; text-transform:none; letter-spacing:0; color:var(--ink); }
+  .alts { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--surface); }
+  .card.chosen { border-color:var(--ok); background:var(--ok-bg); }
+  .card.rejected { opacity:.6; }
+  .meta { color:var(--muted); font-size:13px; }
+  .meta a { color:var(--accent); text-decoration:none; }
+  .meta a:hover { text-decoration:underline; }
+  .badge { display:inline-block; font-size:12px; font-weight:500; line-height:1.4; padding:1px 8px; border-radius:999px; background:var(--surface-2); color:var(--ink); margin-left:4px; vertical-align:middle; }
+  .badge.open { background:var(--info-bg); color:var(--info); }
+  .badge.selected { background:var(--amber-bg); color:var(--amber-ink); }
+  .badge.approved { background:var(--ok-bg); color:var(--ok); }
+  .badge.sent { background:var(--ok-bg); color:var(--ok); }
+  .badge.deferred { background:var(--surface-2); color:var(--muted); }
+  .badge.warn { background:var(--surface); color:var(--warn); border:1px solid var(--warn); }
+  .badge.wait { background:var(--info-bg); color:var(--info); }
+  input[type=text], input[type=search], textarea, select { width:100%; font:inherit; color:var(--ink); background:var(--surface); padding:7px 10px; border:1px solid var(--line); border-radius:8px; }
+  textarea { min-height:72px; }
+  button { font:inherit; color:var(--ink); padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+  button:disabled { opacity:.5; cursor:default; }
+  header button { background:transparent; }
+  .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  .row > input[type=text], .row > input[type=search], .row > textarea { flex:1; min-width:0; }
+  pre { white-space:pre-wrap; background:var(--surface-2); color:var(--ink); padding:12px; border:1px solid var(--line); border-radius:8px; max-height:320px; overflow:auto; margin:8px 0; }
+  details > summary { cursor:pointer; font-weight:500; }
+  .dis { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:8px 0; background:var(--warn-bg); }
+  .dis.closed { background:var(--surface-2); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  td, th { padding:10px 8px; vertical-align:top; }
+  td { border-top:1px solid var(--line); }
+  .error { color:var(--danger); white-space:pre-wrap; }
+  .empty { color:var(--muted); font-style:italic; }
+  dialog { border:1px solid var(--line); border-radius:12px; padding:20px; background:var(--surface); color:var(--ink); width:min(520px, calc(100vw - 24px)); }
+  dialog#settings { width:min(760px, calc(100vw - 24px)); max-height:calc(100vh - 48px); }
+  dialog#settings pre, dialog#settings code { white-space:pre-wrap; overflow-wrap:anywhere; }
+  dialog#settings { width:min(680px, calc(100vw - 24px)); }
+  #s_commands code { overflow-wrap:anywhere; }
+  dialog::backdrop { background:light-dark(rgb(28 25 21 / .4), rgb(0 0 0 / .6)); }
+  label { display:block; margin-top:12px; font-weight:500; font-size:13px; color:var(--muted); }
+  label.inl { display:inline-flex; align-items:center; gap:4px; margin:0; font-weight:400; color:var(--muted); }
+  .link { border:none; background:none; color:var(--accent); padding:0; }
+  button:hover:not(:disabled) { background:var(--surface-2); }
+  button.primary:hover:not(:disabled) { background:var(--accent-hover); }
+  header button:hover:not(:disabled) { background:var(--surface-2); }
+  .link:hover:not(:disabled) { background:none; text-decoration:underline; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  section h2.title { font-size:22px; font-weight:600; margin:0; color:var(--ink); }
+  h3 { font-size:14px; font-weight:600; margin:16px 0 6px; }
+  .clamp { color:var(--muted); white-space:pre-wrap; max-height:4.5em; overflow:hidden; margin:8px 0; }
+  .prose { white-space:pre-wrap; }
+  section.status { border:none; padding:0; }
+  .sol { font-size:16px; }
+  .meter { width:140px; height:6px; background:var(--line); border-radius:999px; overflow:hidden; }
+  .meter > span { display:block; height:100%; background:var(--ok); }
+  .step { margin:12px 0 16px; }
+  .peer { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:8px 0; background:var(--surface); }
+  section.job { background:var(--info-bg); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  section.job pre { max-height:220px; background:var(--surface); }
+  .muted { color:var(--muted); font-size:13px; }
+  select.model { width:auto; }
+  .board th { text-align:left; font-size:13px; font-weight:500; color:var(--muted); border-bottom:1px solid var(--line); }
+  .board tr.disputed td { background:var(--warn-bg); }
+  .board tr.ruling td { border-top:none; background:var(--surface); font-size:13px; }
+  .indent { padding-left:14px; }
+  .final { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; background:var(--ok-bg); }
+  details { margin:6px 0; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  #errors { position:fixed; top:64px; right:16px; z-index:10; max-width:min(480px, calc(100vw - 32px)); display:flex; gap:12px; align-items:flex-start; background:var(--danger-bg); border:1px solid var(--line); color:var(--danger); border-radius:10px; padding:10px 12px; }
+  #errors[hidden] { display:none; }
+  #errorMsg { flex:1; white-space:pre-wrap; }
+  @media (max-width:720px) {
+    #layout, #layout.collapsed { grid-template-columns:1fr; height:auto; }
+    #resizer { display:none; }
+    aside { border-bottom:1px solid var(--line); max-height:40vh; }
+    .strip { position:static; margin:0 -16px 16px; padding:8px 16px 0; }
+    .pt > .head { grid-template-columns:14px 36px minmax(0, 1fr) auto; }
+    .pt > .head > .preview { display:none; }
+    main { padding:16px; overflow:visible; }
+    section h2.title { font-size:20px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Decision Ledger</h1>
+  <button onclick="openSettings()">Settings &amp; wiki</button>
+  <button onclick="location.href='/api/export'">Export JSON</button>
+  <button onclick="document.getElementById('importFile').click()">Import JSON</button>
+  <input type="file" id="importFile" accept=".json" hidden onchange="importFile(this)">
+</header>
+<div id="layout">
+  <aside>
+    <div class="row side-top"><button class="link" id="collapseBtn" onclick="toggleSide()" aria-label="Collapse sidebar">«</button><input type="text" id="newTitle" placeholder="New problem title"><button class="primary" onclick="newProblem(null, 'newTitle')">Add</button></div>
+    <div class="row"><input type="search" id="treeSearch" placeholder="Search" oninput="treeQuery = this.value; renderTree()">
+      <span class="seg" role="group" aria-label="Show"><button data-f="active" onclick="setTreeFilter('active')">Active</button><button data-f="all" onclick="setTreeFilter('all')">All</button></span></div>
+    <div id="tree"></div>
+    <div class="row" id="sendAll"></div>
+  </aside>
+  <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
+  <main id="main"><p class="empty">Create or open a problem.</p></main>
+</div>
+
+<dialog id="settings">
+  <h3>Settings</h3>
+  <label>Primary agent name</label><input type="text" id="s_primary_name">
+  <label>Secondary models you copy to (comma-separated, e.g. gemini, gpt, cursor)</label><input type="text" id="s_secondary_names">
+  <label>Of those, the ones that can open this repository themselves (e.g. cursor)</label><input type="text" id="s_secondary_with_code">
+  <div id="s_commands"></div>
+  <div class="row" style="justify-content:flex-end;margin-top:12px">
+    <button onclick="document.getElementById('settings').close()">Cancel</button>
+    <button class="primary" onclick="saveSettings()">Save</button>
+  </div>
+</dialog>
+<dialog id="cancelDlg">
+  <h3>Stop the running job?</h3>
+  <p class="meta">The agent may already have changed files. Stopping does not undo them.</p>
+  <div class="row">
+    <button class="primary" autofocus onclick="cancelJob(false)">Stop, keep changes</button>
+    <button id="revertBtn" aria-describedby="revertNote" onclick="cancelJob(true)">Stop and revert</button>
+    <button onclick="$('cancelDlg').close()">Keep running</button>
+  </div>
+  <p id="revertNote" class="meta"></p>
+</dialog>
+<dialog id="confirmDlg">
+  <p id="confirmMsg" class="prose"></p>
+  <div class="row" style="justify-content:flex-end">
+    <button autofocus onclick="$('confirmDlg').close()">Cancel</button>
+    <button class="primary" id="confirmOk" onclick="$('confirmDlg').close('ok')">OK</button>
+  </div>
+</dialog>
+<div id="errors" role="alert" hidden><div id="errorMsg"></div><button class="link" onclick="clearError()">Dismiss</button></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+let state = { settings: {}, problems: [] };
+let current = null;   // problem detail
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const val = id => $(id).value.trim();
+const time = ts => ts ? new Date(ts).toLocaleString() : "";
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, headers: { "Content-Type": "application/json", "X-Ledger": "1" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail).replace(/^"|"$/g, "") : res.statusText);
+  return data;
+}
+
+// Runs an action, disabling its button meanwhile; errors are shown, never swallowed.
+// A success clears the error region unless the action itself put a message there.
+async function act(btn, fn, busyText) {
+  const label = btn?.textContent;
+  if (btn) { btn.disabled = true; if (busyText) btn.textContent = busyText; }
+  try { const seen = errorSeq; await fn(); if (errorSeq === seen) clearError(); await refresh(); }
+  catch (e) { showError(e.message); await refresh(); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
+}
+
+// One modal for every confirmation, outside #main so re-renders keep it. Resolves true only on OK (Esc is cancel).
+function ask(msg, ok = "OK") {
+  const d = $("confirmDlg");
+  $("confirmMsg").textContent = msg; $("confirmOk").textContent = ok; d.returnValue = "";
+  d.showModal();
+  return new Promise(res => d.addEventListener("close", () => res(d.returnValue === "ok"), { once: true }));
+}
+
+// The error region stays until dismissed or the next successful action. A modal makes the page inert,
+// so the region moves into the open dialog and back to the page when that dialog closes.
+let errorSeq = 0;
+function showError(msg) {
+  const box = $("errors");
+  (document.querySelector("dialog[open]") ?? document.body).append(box);
+  $("errorMsg").textContent = msg; box.hidden = false; errorSeq++;
+}
+function clearError() { $("errors").hidden = true; $("errorMsg").textContent = ""; }
+document.addEventListener("close", e => { if (e.target.contains($("errors"))) document.body.append($("errors")); }, true);
+
+// Shows why a click did nothing beside the control that needs input; the next render removes it.
+function fieldError(btn, msg) {
+  btn.parentElement.querySelector(".field-error")?.remove();
+  btn.insertAdjacentHTML("afterend", `<span class="error meta field-error" role="alert">${esc(msg)}</span>`);
+}
+
+async function refresh() {
+  state = await api("GET", "/api/state");
+  renderTree();
+  if (current) {
+    try { current = await api("GET", `/api/problems/${current.problem.id}`); }
+    catch { current = null; }
+  }
+  await loadJob();
+  renderMain();
+}
+
+async function openProblem(id) {
+  current = await api("GET", `/api/problems/${id}`);
+  syncHash();
+  await api("PUT", "/api/settings", { last_problem_id: id });
+  await loadJob();
+  renderTree(); renderMain();
+}
+
+// -- background jobs and models -----------------------------------------------
+
+let job = null;                    // the job shown in the progress panel
+let pollTimer = null;
+const dismissed = new Set();       // finished jobs the user closed
+let models = [], modelsError = "";
+
+async function loadModels(refresh) {
+  try { const r = await api("GET", "/api/models" + (refresh ? "?refresh=1" : "")); models = r.models; modelsError = r.error || ""; }
+  catch (e) { modelsError = e.message; }
+}
+
+function refreshModels(btn) { act(btn, () => loadModels(true)); }
+
+// A running job from another problem (e.g. "send all") stays visible; otherwise show this problem's latest.
+async function loadJob() {
+  const r = current ? await api("GET", `/api/problems/${current.problem.id}/job`).catch(() => null) : null;
+  const latest = r?.job ?? null;
+  if (latest && (job?.state !== "running" || latest.state === "running")) job = latest;
+  pollJob();
+}
+
+function pollJob() {
+  clearTimeout(pollTimer);
+  if (job?.state !== "running") return;
+  const id = job.id;
+  pollTimer = setTimeout(async () => {
+    try {
+      const j = await api("GET", `/api/jobs/${id}`);
+      if (job?.id !== id) return;
+      job = j;
+      if (j.state === "running") { paintJob(); pollJob(); return; }
+      // Answers stay in their inputs until the analysis succeeded, so a failed run can be retried.
+      if (j.kind === "analyse" && j.state === "done") Object.keys(drafts).filter(k => k.startsWith("q_")).forEach(k => delete drafts[k]);
+      await refresh();
+    } catch (e) {
+      if (job?.id === id) { job = { ...job, state: "failed", error: e.message }; renderMain(); }
+    }
+  }, 1500);
+}
+
+function paintJob() {
+  const el = $("jobpanel");
+  if (!el) return;
+  el.innerHTML = jobPanel();
+  if ($("waits") && current?.strip) $("waits").innerHTML = waitChips(current.strip);
+  const o = $("jobout"); if (o) o.scrollTop = o.scrollHeight;
+}
+
+const VERB = { implement: "implementing", review: "reviewing", cycle: "running auto rounds", finalise: "writing the final proposal" };
+const mins = ms => { const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`; };
+
+function jobPanel() {
+  const j = job;
+  if (!j || dismissed.has(j.id) || !(j.state === "running" || j.problem_ids.includes(current?.problem.id))) return "";
+  if (j.kind === "analyse" && (j.state === "failed" || j.state === "done")) return "";   // failures show in the Next section
+  const verb = VERB[j.kind] ?? "analysing", who = esc(j.agent || state.settings.primary_name);
+  const stored = j.kind === "cycle" ? esc(j.result?.stopped ?? "") : j.kind === "review" ? `Reply stored as review ${j.result?.review_id}.${j.result?.warnings?.length ? ` <b>Warnings:</b> ${esc(j.result.warnings.join("; "))}` : ""}`
+    : j.kind === "finalise" && j.result?.selected === false ? "Added as an alternative but not selected, because the current selection is already approved. Select it yourself to replace the approval."
+    : "The full output is saved under Agent output.";
+  const head = {
+    running: `<b>${j.kind === "cycle" ? "Auto rounds running" : `${who} is ${verb}`}…</b> <span class="meta">${mins(j.elapsed_ms)}${j.model ? ` · model ${esc(j.model)}` : ""}</span><span style="flex:1"></span><button onclick="openCancel()">Stop…</button>`,
+    done: `<b>${who} finished in ${mins(j.elapsed_ms)}</b> <span class="meta">${j.cost ? `${usd(j.cost)} · ` : ""}${stored}</span><span style="flex:1"></span><button onclick="dismissJob()">Dismiss</button>`,
+    failed: `<b>${verb} failed</b><span style="flex:1"></span><button onclick="dismissJob()">Dismiss</button>`,
+    cancelled: `<b>Stopped after ${mins(j.elapsed_ms)}</b> <span class="meta">Files the agent changed may remain; check the workspace.</span><span style="flex:1"></span><button onclick="dismissJob()">Dismiss</button>`,
+  }[j.state];
+  return `<section class="job"><div class="row">${head}</div>
+    ${j.error ? `<div class="error">${esc(j.error)}</div>` : ""}
+    ${j.state !== "running" ? (j.output.trim() ? det(`jobout_${j.id}`, `<span class="meta">Show output</span>`, `<pre>${esc(j.output)}</pre>`) : "")
+      : j.output.trim() ? `<pre id="jobout">${esc(j.output)}</pre>` : `<p class="meta">No output yet.</p>`}</section>`;
+}
+
+// Runs the reviewer's CLI as a background job. Setting and approving the command stay on the command line.
+function runReviewer(btn, to) {
+  act(btn, async () => {
+    const { job_id } = await api("POST", `/api/problems/${current.problem.id}/runs/${encodeURIComponent(to)}`, { model: reviewerChoice(to) || "none" });
+    dismissed.delete(job_id);
+    job = await api("GET", `/api/jobs/${job_id}`);
+  });
+}
+
+// Auto rounds: approved runners review, then the primary processes the replies, up to N times.
+// The same check as runnable() in cycle.go, which /cycle and /runs apply.
+const runnable = n => {
+  const cmd = state.settings.secondary_commands?.[n];
+  return !!cmd && (state.settings.runner_confirmed ?? []).includes(cmd);
+};
+const runnableNames = () => (state.settings.secondary_names ?? []).filter(runnable);
+const cycleRounds = () => Number(drafts.cycle_rounds ?? state.settings.cycle_rounds) || 1;
+
+function cycleStep() {
+  const runners = runnableNames();
+  if (!runners.length) return "";
+  const busy = job?.state === "running" && job.problem_ids.includes(current.problem.id);
+  const manual = (state.settings.secondary_names ?? []).filter(n => !runners.includes(n));
+  return `<div class="step"><h3>Auto rounds</h3>
+    <div class="row"><span class="meta">Pause after</span>
+      <select onchange="setCycleRounds(this)">${[1, 2, 3].map(n => `<option value="${n}" ${n === cycleRounds() ? "selected" : ""}>${n} round${n > 1 ? "s" : ""}</option>`).join("")}</select>
+      <button ${busy ? "disabled" : ""} onclick="runCycle(this)">Run ${esc(runners.join(" + "))} → ${esc(state.settings.primary_name)}</button></div>
+    <p class="meta">Stops early if ${esc(state.settings.primary_name)} asks you questions, every point is settled, or a round changes nothing.${manual.length ? ` Pauses for copy-paste from ${esc(manual.join(", "))}.` : ""} Nothing is selected or approved for you.</p></div>`;
+}
+
+function setCycleRounds(sel) {
+  drafts.cycle_rounds = Number(sel.value);
+  act(null, () => api("PUT", "/api/settings", { cycle_rounds: Number(sel.value) }));
+}
+
+function runCycle(btn) {
+  act(btn, async () => {
+    const { job_id } = await api("POST", `/api/problems/${current.problem.id}/cycle`, { rounds: cycleRounds(), model: modelChoice("analyse") });
+    dismissed.delete(job_id);
+    job = await api("GET", `/api/jobs/${job_id}`);
+  });
+}
+
+function dismissJob() { dismissed.add(job.id); renderMain(); }
+
+function openCancel() {
+  $("revertBtn").hidden = $("revertNote").hidden = !job?.can_revert;
+  $("revertNote").textContent = `Stop and revert runs git checkout and git clean in ${state.settings.workdir}. Everything changed or created since the job started is discarded.`;
+  $("cancelDlg").showModal();
+}
+
+function cancelJob(revert) {
+  $("cancelDlg").close();
+  act(null, async () => { job = await api("POST", `/api/jobs/${job.id}/cancel`, { revert }); });
+}
+
+// The preset key sent with a run; "" means the stage default. Presets themselves are CLI-only config.
+const modelChoice = stage => drafts[`model_${stage}`] ?? state.settings[`default_${stage}_model`] ?? "";
+
+// Linked model / context / effort selects over the preset listing; every choice resolves to a preset key.
+// Legacy Args-only presets (no model) are plain entries with context and effort disabled.
+// No JS test harness exists: this pure function is untested (the capability table is tested in Go).
+function presetChoices(list, key) {
+  const structured = list.filter(m => m.model), cur = list.find(m => m.key === key);
+  const uniq = f => [...new Set(structured.map(f))];
+  const has = (model, ctx, effort) => structured.some(m => m.model === model && (ctx === undefined || (m.context || "") === ctx) && (effort === undefined || (m.effort || "") === effort));
+  const model = cur?.model || "", ctx = cur?.context || "", effort = cur?.effort || "";
+  const find = (model, ctx, effort) => structured.find(m => m.model === model && (m.context || "") === ctx && (m.effort || "") === effort)
+    ?? structured.find(m => m.model === model && (m.context || "") === ctx) ?? structured.find(m => m.model === model);
+  return {
+    model: cur ? (cur.model ? "m:" + cur.model : "k:" + cur.key) : "none",
+    structured: !!cur?.model, context: ctx, effort,
+    models: [...uniq(m => m.model).map(v => ({ v: "m:" + v, label: v })), ...list.filter(m => !m.model).map(m => ({ v: "k:" + m.key, label: m.label }))],
+    contexts: uniq(m => m.context || "").map(v => ({ v, label: v || "default", off: !has(model, v) })),
+    efforts: uniq(m => m.effort || "").map(v => ({ v, label: v || "default", off: !has(model, ctx, v) })),
+    pick(field, value) {
+      if (field === "model") return value === "none" ? "none" : value.startsWith("k:") ? value.slice(2) : find(value.slice(2), ctx, effort).key;
+      return (field === "context" ? find(model, value, effort) : find(model, ctx, value)).key;
+    },
+  };
+}
+
+function pickPreset(stage, field, value) {
+  drafts[`model_${stage}`] = presetChoices(models, modelChoice(stage)).pick(field, value);
+  renderMain();
+}
+
+// The linked model / context / reasoning selects; onpick(field) is the JS run on change with this.value.
+function presetSelects(c, onpick, noneLabel) {
+  // The reason sits on the label: disabled selects get no hover in some browsers.
+  const sel = (field, name, opts, val, off) => `<label class="inl" ${off ? `title="Only presets that name a model have ${name} options"` : ""}>${name}
+    <select class="model" ${off ? "disabled" : ""} onchange="${onpick(field)}">
+    ${opts.map(o => `<option value="${esc(o.v)}" ${o.v === val ? "selected" : ""} ${o.off ? "disabled" : ""}>${esc(o.label)}</option>`).join("")}</select></label>`;
+  return sel("model", "model", [{ v: "none", label: noneLabel }, ...c.models], c.model)
+    + sel("context", "context", c.contexts, c.context, !c.structured) + sel("effort", "reasoning", c.efforts, c.effort, !c.structured);
+}
+
+function modelPicker(stage) {
+  const def = state.settings[`default_${stage}_model`] || "", cur = modelChoice(stage) || "none";
+  const c = presetChoices(models, cur === "none" ? "" : cur);
+  return `<span class="row" style="margin:0">
+    ${presetSelects(c, field => `pickPreset('${stage}', '${field}', this.value)`, "Base command (no preset)")}
+    ${(cur === "none" ? "" : cur) !== def ? `<button class="link meta" onclick="setDefaultModel(this, '${stage}')">make default</button>` : ""}
+    <button class="link meta" title="Refresh the model list" onclick="refreshModels(this)">↻</button>
+    ${modelsError ? `<span class="error meta">${esc(modelsError)}</span>` : ""}</span>`;
+}
+
+// Reviewer models come from the runner CLI's own list (GET /api/runners/{agent}/models).
+const reviewerModels = {};          // agent -> { models, error, fixed }
+async function loadReviewerModels(refresh) {
+  const names = Object.keys(state.settings.secondary_commands ?? {}).filter(n => (state.settings.secondary_names ?? []).includes(n));
+  await Promise.all(names.map(async n => {
+    try { reviewerModels[n] = await api("GET", `/api/runners/${encodeURIComponent(n)}/models${refresh ? "?refresh=1" : ""}`); }
+    catch (e) { reviewerModels[n] = { models: [], error: e.message }; }
+  }));
+}
+// The model id sent with a run: a draft pick, else the saved default; "none" = the runner's own default.
+const reviewerChoice = to => drafts[`rmodel_${to}`] ?? state.settings.review_models?.[to] ?? "";
+
+function reviewerPicker(to) {
+  const r = reviewerModels[to];
+  if (!r) return "";
+  if (r.fixed) return `<span class="meta">model ${esc(r.fixed)} (set in the runner command)</span>`;
+  if (!r.models.length) return r.error ? `<span class="error meta">${esc(r.error)}</span>` : "";
+  const cur = reviewerChoice(to), saved = state.settings.review_models?.[to] ?? "", c = presetChoices(r.models, cur === "none" ? "" : cur);
+  return `<span class="row" style="margin:0">
+    ${presetSelects(c, field => `pickReviewerModel(${jsArg(to)}, '${field}', this.value)`, "Runner default")}
+    ${(cur === "none" ? "" : cur) !== saved ? `<button class="link meta" onclick="setReviewerDefault(this, ${jsArg(to)})">make default</button>` : ""}
+    <button class="link meta" title="Refresh ${esc(to)}'s model list" onclick="act(this, () => loadReviewerModels(true))">↻</button>
+    ${r.error ? `<span class="error meta">${esc(r.error)}</span>` : ""}</span>`;
+}
+
+function pickReviewerModel(to, field, value) {
+  const cur = reviewerChoice(to);
+  drafts[`rmodel_${to}`] = presetChoices(reviewerModels[to].models, cur === "none" ? "" : cur).pick(field, value);
+  renderMain();
+}
+
+function setReviewerDefault(btn, to) {
+  const key = reviewerChoice(to) === "none" ? "" : reviewerChoice(to);
+  act(btn, async () => { await api("PUT", "/api/settings", { review_models: { ...state.settings.review_models, [to]: key } }); delete drafts[`rmodel_${to}`]; });
+}
+
+function setDefaultModel(btn, stage) {
+  const key = modelChoice(stage) === "none" ? "" : modelChoice(stage);
+  act(btn, async () => { await api("PUT", "/api/settings", { [`default_${stage}_model`]: key }); delete drafts[`model_${stage}`]; });
+}
+
+// Layout preferences (sidebar width, filters, folded branches) live in this browser only.
+const ui = Object.assign({ side: 260, sideCollapsed: false, treeFilter: "active", boardFilter: "needs", folded: [] },
+  JSON.parse(localStorage.getItem("dlg.ui") || "{}"));
+const saveUI = () => localStorage.setItem("dlg.ui", JSON.stringify(ui));
+let treeQuery = "", treeMenu = null;   // treeMenu: the problem whose ⋯ menu is open
+
+function applyLayout() {
+  $("layout").style.setProperty("--side", `${ui.side}px`);
+  $("layout").classList.toggle("collapsed", ui.sideCollapsed);
+  $("collapseBtn").textContent = ui.sideCollapsed ? "»" : "«";
+  $("collapseBtn").setAttribute("aria-label", ui.sideCollapsed ? "Expand sidebar" : "Collapse sidebar");
+}
+function toggleSide() { ui.sideCollapsed = !ui.sideCollapsed; saveUI(); applyLayout(); }
+
+$("resizer").addEventListener("pointerdown", e => {
+  const r = $("resizer"), left = $("layout").getBoundingClientRect().left;
+  r.setPointerCapture(e.pointerId); r.classList.add("drag");
+  const move = e => { ui.side = Math.min(480, Math.max(200, Math.round(e.clientX - left))); applyLayout(); };
+  r.addEventListener("pointermove", move);
+  r.addEventListener("pointerup", () => { r.removeEventListener("pointermove", move); r.classList.remove("drag"); saveUI(); }, { once: true });
+});
+
+function setTreeFilter(f) { ui.treeFilter = f; saveUI(); renderTree(); }
+function toggleFold(id) { ui.folded = ui.folded.includes(id) ? ui.folded.filter(x => x !== id) : [...ui.folded, id]; saveUI(); renderTree(); }
+function toggleTreeMenu(id) { treeMenu = treeMenu === id ? null : id; renderTree(); }
+
+const descendants = id => state.problems.filter(p => p.parent_id === id).flatMap(c => [c, ...descendants(c.id)]);
+
+function renameProblem(btn, id) {
+  const title = val(`rn_${id}`);
+  if (!title) { fieldError(btn, "A title is required."); return; }
+  act(btn, async () => { await api("PATCH", `/api/problems/${id}`, { title }); treeMenu = null; });
+}
+
+async function deleteProblem(btn, id) {
+  const p = state.problems.find(x => x.id === id), n = descendants(id).length;
+  if (!await ask(`Delete "${p.title}"${n ? ` and its ${n} sub-problem(s)` : ""}? Alternatives, notes, reviews and decisions are removed too. Audit events remain.`, "Delete")) return;
+  act(btn, async () => { await api("DELETE", `/api/problems/${id}`); treeMenu = null; });
+}
+
+function renderTree() {
+  const byParent = {};
+  state.problems.forEach(p => (byParent[p.parent_id ?? "root"] ||= []).push(p));
+  const q = treeQuery.trim().toLowerCase();
+  const match = p => (ui.treeFilter === "all" || ["open", "selected"].includes(p.status) || p.id === current?.problem.id)
+    && (!q || p.title.toLowerCase().includes(q));
+  // A problem shows if it or a descendant matches, so a live sub-problem keeps its parent visible.
+  const shown = p => match(p) || (byParent[p.id] || []).some(shown);
+  const menu = p => `<div class="menu">
+      <div class="row"><input type="text" id="rn_${p.id}" value="${esc(p.title)}" aria-label="Title"><button onclick="renameProblem(this, ${p.id})">Rename</button></div>
+      <div class="row"><input type="text" id="sub_${p.id}" placeholder="New sub-problem"><button onclick="newProblem(${p.id}, 'sub_${p.id}')">Add</button></div>
+      <div class="row"><button onclick="deleteProblem(this, ${p.id})">Delete…</button><span style="flex:1"></span><button class="link" onclick="toggleTreeMenu(${p.id})">Close</button></div></div>`;
+  const branch = key => {
+    const items = (byParent[key] || []).filter(shown);
+    if (!items.length) return "";
+    return `<ul class="tree">${items.map(p => {
+      const kids = (byParent[p.id] || []).filter(shown), folded = !q && ui.folded.includes(p.id), on = current?.problem.id === p.id;
+      return `<li><div class="node ${on ? "active" : ""}">
+        ${kids.length ? `<button class="twisty" aria-expanded="${!folded}" aria-label="${folded ? "Show" : "Hide"} sub-problems" onclick="toggleFold(${p.id})">${folded ? "▸" : "▾"}</button>` : `<span class="twisty"></span>`}
+        <span class="dot ${p.status}" title="${p.status}"></span>
+        <button class="link title" title="${esc(p.title)} (${p.status})" ${on ? `aria-current="page"` : ""} onclick="openProblem(${p.id})">${esc(p.title)}</button>
+        ${folded ? `<span class="meta">${kids.length}</span>` : ""}
+        ${p.needs_you ? `<span class="needs" title="Waiting on you">●</span>` : ""}
+        ${p.open_disagreements ? `<span class="badge warn" title="Open disagreements">${p.open_disagreements}</span>` : ""}
+        <button class="more" aria-expanded="${treeMenu === p.id}" aria-label="Actions for ${esc(p.title)}" onclick="toggleTreeMenu(${p.id})">⋯</button>
+      </div>${treeMenu === p.id ? menu(p) : ""}${folded ? "" : branch(p.id)}</li>`;
+    }).join("")}</ul>`;
+  };
+  const hidden = state.problems.filter(p => !shown(p)).length;
+  $("tree").innerHTML = (branch("root") || `<p class="empty">${state.problems.length ? "No matching problems." : "No problems yet."}</p>`)
+    + (hidden && ui.treeFilter === "active" ? `<p class="meta">${hidden} finished hidden · <button class="link" onclick="setTreeFilter('all')">show all</button></p>` : "");
+  document.querySelectorAll(".seg [data-f]").forEach(b => b.setAttribute("aria-pressed", b.dataset.f === ui.treeFilter));
+  const approved = state.problems.filter(p => p.status === "approved");
+  $("sendAll").innerHTML = approved.length
+    ? `<button onclick="implement(this, [${approved.map(p => p.id)}])">Send all ${approved.length} approved to ${esc(state.settings.primary_name)}</button>` : "";
+}
+
+// -- problem view -----------------------------------------------------------
+// The page leads with the current state and the next action; everything else is one click away.
+
+const drafts = {};                 // unsaved text in inputs, kept across re-renders
+const openKeys = new Set();        // which <details> the user expanded
+const draft = id => esc(drafts[id] ?? "");
+// Keys can contain agent- or import-supplied text: quote them as JS strings, then escape for the attribute.
+const jsArg = s => esc(JSON.stringify(String(s)));
+const keep = id => `id="${esc(id)}" oninput="drafts[${jsArg(id)}] = this.value"`;
+const det = (key, summary, body, cls = "") =>
+  `<details class="${cls}" ${openKeys.has(key) ? "open" : ""} ontoggle="this.open ? openKeys.add(${jsArg(key)}) : openKeys.delete(${jsArg(key)})"><summary>${summary}</summary>${body}</details>`;
+const list = items => items?.length ? `<ul>${items.map(i => `<li>${esc(i)}</li>`).join("")}</ul>` : "";
+const parse = c => { try { return { ...JSON.parse(c.body), id: c.id, at: c.created_at, meta: c.meta }; } catch { return null; } };
+const CHIP = { agreed: ["approved", "agreed"], disputed: ["warn", "disputed"], open: ["open", "open"], decided: ["selected", "decided"] };
+const chip = s => `<span class="badge ${CHIP[s]?.[0] ?? ""}">${CHIP[s]?.[1] ?? esc(s)}</span>`;
+const PEER = { unsent: "not sent yet", changed: "update ready", sent: "waiting for reply", replied: "replied" };
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// Falls back to a hidden textarea where the async clipboard API is blocked.
+async function copyText(text, msg) {
+  let ok = await navigator.clipboard?.writeText(text).then(() => true, () => false);
+  if (!ok) {
+    const t = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(t); t.select();
+    ok = document.execCommand("copy");
+    t.remove();
+  }
+  if (ok) { clearError(); toast(msg); } else showError("Could not copy. Open the preview and copy the text by hand.");
+  return ok;
+}
+
+// Chat boxes cut very long pastes; warn before the user sends a handoff that may arrive incomplete.
+const LONG_PASTE = 30000;
+const REPLY_TEMPLATE = "SUMMARY: your view in 2-3 lines\nSOLUTION: the approach you recommend\n[P1] AGREE | DISAGREE: why\nNEW: points I missed (optional)\nOPEN: questions (optional)";
+const metaOf = c => { try { return JSON.parse(c.meta) ?? {}; } catch { return {}; } };
+// A reviewer with a runner (set with `dlg config set-runner`) gets a Run button; unapproved commands say how to approve them.
+function runnerButton(h, cls) {
+  const cmd = state.settings.secondary_commands?.[h.to];
+  if (!cmd) return "";
+  const busy = job?.state === "running" && job.problem_ids.includes(current.problem.id);
+  const ok = runnable(h.to);
+  const tip = ok ? `Runs: ${cmd}` : `Not approved yet. In a terminal: dlg config set-runner ${h.to} <command>, or dlg run ${current.problem.id} ${h.to}`;
+  return `<button class="${ok ? cls : ""}" title="${esc(tip)}" ${busy ? "disabled" : ""} onclick="runReviewer(this, ${esc(JSON.stringify(h.to))})">Run ${esc(h.to)}</button>`;
+}
+const runInfo = m => m.run_id
+  ? `<div class="meta">run ${esc(m.run_id)} · <code>${esc(m.command)}</code> · exit ${m.exit_code} · ${m.duration_ms} ms${m.truncated ? ` · <b>truncated</b>` : ""}</div>` : "";
+
+// Usage as the agent reported it; a missing cost is shown as such, never as $0.
+const kTok = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`;
+const usd = l => !l.priced ? "no cost reported" : `$${l.cost_usd.toFixed(2)}${l.runs > l.priced ? ` (+${l.runs - l.priced} without cost)` : ""}`;
+function usageText(m) {
+  const u = m?.usage;
+  if (!u) return "";
+  return [u.models?.join(" + ") || m.model, u.duration_ms && mins(u.duration_ms), u.turns && `${u.turns} turns`,
+    (u.input_tokens || u.output_tokens) && `${kTok(u.input_tokens ?? 0)} in / ${kTok(u.output_tokens ?? 0)} out`,
+    u.cache_read_tokens && `${kTok(u.cache_read_tokens)} cache read`,
+    u.cost_usd != null ? `$${u.cost_usd.toFixed(2)}` : "no cost reported", m.failed && "failed"].filter(Boolean).map(esc).join(" · ");
+}
+
+// Copies first (the click still counts as a user gesture), then records what was sent.
+async function copyHandoff(btn, to) {
+  const h = current.handoffs.find(x => x.to === to);
+  if (!h.text.trim()) { fieldError(btn, `The text for ${to} is empty. Analyse the problem first.`); return; }
+  const msg = `Copied ${h.mode === "delta" ? "update" : "full context"} for ${to}`;
+  if (!await copyText(h.text, h.text.length > LONG_PASTE ? `${msg}. Warning: ${h.text.length} characters; check that ${to} received it all.` : msg)) return;
+  if (["unsent", "changed"].includes(h.state)) act(btn, () => api("POST", `/api/problems/${current.problem.id}/handoffs`, { to }));
+}
+
+function saveReply(btn, to) {
+  const id = `rev_${to}`, body = (drafts[id] ?? "").trim();
+  if (!body) { fieldError(btn, "Paste the reply first."); return; }
+  act(btn, async () => {
+    const r = await api("POST", `/api/problems/${current.problem.id}/reviews`, { author: to, body });
+    delete drafts[id]; openKeys.delete(`paste_${to}`);
+    if (r.warnings?.length) showError(`Reply saved, but:\n- ${r.warnings.join("\n- ")}\n\nIt may be cut off or not in the requested format. Ask ${to} to continue or reply in the format.`);
+  });
+}
+
+function parseReply(btn, id) {
+  act(btn, async () => {
+    const p = await api("POST", `/api/reviews/${id}/parse`);
+    if (!p.points.length) showError("No \"[P1] AGREE | DISAGREE: why\" lines found in this reply.");
+  });
+}
+
+function addNote(btn) {
+  const body = (drafts.p_note ?? "").trim();
+  if (!body) return;
+  act(btn, async () => { await api("POST", `/api/problems/${current.problem.id}/notes`, { body }); delete drafts.p_note; });
+}
+
+// Saves the answers as notes (the agent sees all notes), then starts the analysis as a background job.
+// Answers already saved as a note are not saved twice, and the inputs are cleared only when the job succeeds.
+function analyse(btn, questions = []) {
+  const pid = current.problem.id;
+  act(btn, async () => {
+    const saved = new Set(current.contributions.filter(c => c.kind === "context").map(c => c.body));
+    for (const [i, q] of questions.entries()) {
+      // A blank answer means "accept the agent's assumption".
+      const a = (drafts[`q_${i}`] ?? "").trim() || "(left blank; proceed with your stated assumption)", body = `Q: ${q.question} A: ${a}`;
+      if (!saved.has(body)) await api("POST", `/api/problems/${pid}/notes`, { body });
+    }
+    const { job_id } = await api("POST", `/api/problems/${pid}/analyse`, { model: modelChoice("analyse") });
+    dismissed.delete(job_id);
+    job = await api("GET", `/api/jobs/${job_id}`);
+  });
+}
+
+function rule(btn, point, model, position) {
+  const own = (drafts[`rule_${point.key}`] ?? "").trim();
+  if (!model && !own) { fieldError(btn, "Write your call first."); return; }
+  const body = `Ruling on [${point.key}] ${point.topic}: ` + (model ? `go with ${model} (${position})` : own);
+  act(btn, async () => {
+    await api("POST", `/api/problems/${current.problem.id}/notes`, { body });
+    delete drafts[`rule_${point.key}`]; openKeys.delete(`ruleedit_${point.key}`);
+  });
+}
+
+async function approve(btn, unsettled) {
+  if (unsettled && !await ask(`${unsettled} point(s) have no decision yet. Approve anyway?`, "Approve")) return;
+  act(btn, () => api("POST", `/api/problems/${current.problem.id}/approve`, { note: val("appr_note") }));
+}
+
+// Reviewers live in settings, so every problem offers the same ones.
+function addReviewer(btn) {
+  const name = (drafts.new_reviewer ?? "").trim(), s = state.settings;
+  if (!name) return;
+  if ((s.secondary_names || []).includes(name)) { fieldError(btn, `${name} is already a reviewer.`); return; }
+  const body = { secondary_names: [...(s.secondary_names || []), name] };
+  if ($("new_reviewer_code").checked) body.secondary_with_code = [...(s.secondary_with_code || []), name];
+  act(btn, async () => { await api("PUT", "/api/settings", body); delete drafts.new_reviewer; openKeys.delete("add_reviewer"); });
+}
+
+function toggleCodeAccess(btn, name) {
+  const list = state.settings.secondary_with_code || [];
+  const next = list.includes(name) ? list.filter(n => n !== name) : [...list, name];
+  act(btn, () => api("PUT", "/api/settings", { secondary_with_code: next }));
+}
+
+async function finalise(btn, unsettled) {
+  if (unsettled && !await ask(`${unsettled} point(s) are still disputed or open. Generate the final proposal anyway?`, "Generate")) return;
+  act(btn, async () => {
+    const { job_id } = await api("POST", `/api/problems/${current.problem.id}/finalise`, { model: modelChoice("analyse") });
+    dismissed.delete(job_id);
+    job = await api("GET", `/api/jobs/${job_id}`);
+  });
+}
+
+function renderMain() {
+  if (!current) { $("main").innerHTML = `<p class="empty">Create or open a problem.</p>`; return; }
+  const d = current, p = d.problem, primary = esc(state.settings.primary_name);
+  const of = kind => d.contributions.filter(c => c.kind === kind);
+  const analyses = of("analysis").map(parse).filter(Boolean);
+  const a = analyses.at(-1);
+  const notes = of("context");
+  const reviews = of("review");
+  const newReplies = a ? reviews.filter(r => r.id > a.id) : [];
+  const notesSince = a ? notes.filter(n => n.id > a.id) : [];
+  const points = a?.points ?? [];
+  // The user's call per point: the latest "Ruling on [Pn]" note wins and counts as decided.
+  const rulings = {};
+  notes.forEach(n => { const m = n.body.match(/^Ruling on \[([^\]]+)\]\s*([\s\S]*)$/); if (m) rulings[m[1]] = m[2]; });
+  // "decided" counts only with a ruling note; the agent's own "decided" is treated as open.
+  const effStatus = x => x.key in rulings ? "decided" : x.status === "decided" ? "open" : x.status;
+  const settled = points.filter(x => ["agreed", "decided"].includes(effStatus(x))).length;
+  const disputed = points.filter(x => effStatus(x) === "disputed").length;
+  const handoffs = d.handoffs ?? [];
+  const pending = handoffs.find(h => ["unsent", "changed"].includes(h.state));
+  const waiting = handoffs.filter(h => h.state === "sent");   // handoff sent, no reply yet
+  // Positions parsed from replies the primary has not processed yet show on the board as a preview.
+  const preview = {};
+  newReplies.forEach(r => (metaOf(r).parsed?.points ?? []).forEach(pt => ((preview[r.author] ||= {})[pt.key] = `${pt.stance}: ${pt.reason}`)));
+  const posOf = (x, m) => x.positions?.[m] ?? preview[m]?.[x.key];
+  // Exactly one recommended action is highlighted.
+  // Once every point is settled, a reviewer update is optional: the next step is the final proposal.
+  const allSettled = points.length > 0 && settled === points.length;
+  const hasFinal = d.alternatives.some(x => x.author === "consensus");
+  const next = !a ? "analyse" : newReplies.length ? "process" : a.questions?.length ? "answer"
+    : notesSince.length ? "reanalyse" : allSettled ? (hasFinal ? "" : "final") : pending ? `copy_${pending.to}` : "";
+  const btn = key => next === key ? "primary" : "";
+  const editing = !a || openKeys.has("edit");
+
+  const need = allSettled ? [] : handoffs.filter(h => ["unsent", "changed"].includes(h.state));
+  const jobFailed = job?.kind === "analyse" && job.state === "failed" && job.problem_ids.includes(p.id) && !dismissed.has(job.id)
+    ? `<div class="error">Analysis failed: ${esc(job.error)} Your answers are kept; run it again. <button class="link" onclick="dismissJob()">Dismiss</button></div>` : "";
+  const finalAlt = d.alternatives.filter(x => x.author === "consensus").at(-1);
+
+  const problem = `<section class="problem">
+    <div class="meta">${d.ancestors.map(x => `<a href="#" onclick="openProblem(${x.id});return false">${esc(x.title)}</a>`).join(" › ")}</div>
+    ${editing ? `
+      <div class="row"><input type="text" id="p_title" value="${esc(p.title)}"><span class="badge ${d.status}">${d.status}</span></div>
+      <textarea id="p_context" placeholder="Describe the problem: symptoms, constraints, links…">${esc(p.context)}</textarea>
+      <div class="row">
+        <button onclick="act(this, async () => { await api('PATCH', '/api/problems/${p.id}', {title: val('p_title'), context: $('p_context').value}); openKeys.delete('edit'); })">Save</button>
+        ${a ? `<button onclick="openKeys.delete('edit'); renderMain()">Cancel</button>` : ""}
+        <span style="flex:1"></span>
+        <button onclick="deleteProblem(this, ${p.id})">Delete…</button>
+      </div>`
+    : `<div class="row"><h2 class="title">${esc(p.title)}</h2><span class="badge ${d.status}">${d.status}</span><span style="flex:1"></span>
+        <button class="link" onclick="openKeys.add('edit'); renderMain()">Edit</button></div>
+      ${p.context ? `<div class="clamp">${esc(p.context)}</div>` : ""}`}
+    ${det("notes", `Notes &amp; answers <span class="meta">(${notes.length})</span>`, `
+      ${notes.map(c => `<div class="meta">• ${esc(c.body)} — ${time(c.created_at)}</div>`).join("")}
+      <div class="row"><input type="text" ${keep("p_note")} value="${draft("p_note")}" placeholder="Add context the agents should know"><button onclick="addNote(this)">Add note</button></div>`)}
+  </section>`;
+
+  const status = a ? `<section class="status">
+    <div class="row"><b class="sol">${esc(a.solution.title)}</b></div>
+    <p>${esc(a.summary)}</p>
+    ${det("details", "Solution details", `<div class="analysis">
+      <h3>Proposed solution</h3><div class="prose">${esc(a.solution.description)}</div>
+      ${(a.solution.evidence ?? []).map(e => `<div class="meta">“${esc(e.quote)}” — ${esc(e.source)}</div>`).join("")}
+      ${a.alternatives?.length ? `<h3>Other options considered</h3><ul>${a.alternatives.map(o => `<li><b>${esc(o.title)}</b> ${esc(o.description)}</li>`).join("")}</ul>` : ""}
+      ${a.open_points?.length ? `<h3>Open points</h3>${list(a.open_points)}` : ""}
+      ${a.subproblems?.length ? `<h3>Suggested sub-problems</h3>${a.subproblems.map((s, i) => {
+        const added = d.children.some(c => c.title === s.title);
+        return `<div class="row"><span style="flex:1"><b>${esc(s.title)}</b> <span class="meta">${esc(s.context)}</span></span>
+          ${added ? `<span class="badge">added</span>` : `<button onclick="act(this, () => api('POST', '/api/problems', {title: ${esc(JSON.stringify(s.title))}, context: ${esc(JSON.stringify(s.context ?? ""))}, parent_id: ${p.id}}))">Add as sub-problem</button>`}</div>`;
+      }).join("")}` : ""}
+    </div>`)}
+  </section>` : "";
+
+  const questions = a?.questions?.length ? `<div class="step">
+      <h3>${primary} has ${a.questions.length} question${a.questions.length > 1 ? "s" : ""}</h3>
+      ${a.questions.map((q, i) => `<label style="font-weight:normal">${esc(q.question)} <span class="meta">assumed: ${esc(q.assumption)}</span></label>
+        <input type="text" ${keep(`q_${i}`)} value="${draft(`q_${i}`)}" placeholder="Your answer (leave empty to keep the assumption)">`).join("")}
+      <div class="row"><button class="${btn("answer")}" onclick="analyse(this, current.view.questions)">Re-analyse with answers</button></div>
+    </div>` : "";
+
+  const peers = a ? (handoffs.length ? handoffs.map(h => `<div class="peer ${h.state}">
+      <div class="row"><b>${esc(h.to)}</b>
+        <button class="link meta" title="${h.has_code ? "Gets pointers to the code instead of quotes" : "Gets the code facts quoted, since it cannot see the repository"}" onclick="toggleCodeAccess(this, ${esc(JSON.stringify(h.to))})">${h.has_code ? "repo access" : "no repo access"}</button><span class="badge ${h.state === "replied" ? "approved" : h.state === "sent" ? "wait" : "selected"}">${PEER[h.state]}</span>
+        <span style="flex:1"></span>
+        ${runnerButton(h, btn(`copy_${h.to}`))}
+        <button class="${state.settings.secondary_commands?.[h.to] ? "" : btn(`copy_${h.to}`)}" onclick="copyHandoff(this, ${esc(JSON.stringify(h.to))})">${h.state === "unsent" ? "Copy full context" : h.state === "changed" ? "Copy update (delta)" : "Copy again"}</button></div>
+      ${reviewerPicker(h.to) ? `<div class="row">${reviewerPicker(h.to)}</div>` : ""}
+      ${det(`preview_${h.to}`, `<span class="meta">Preview ${h.mode === "delta" ? "update" : "full context"} · ${h.text.length} chars</span>`, `<pre>${esc(h.text)}</pre>`)}
+      ${det(`paste_${h.to}`, `<span class="meta">Paste ${esc(h.to)}'s reply</span>`, `
+        <textarea ${keep(`rev_${h.to}`)} style="min-height:110px" placeholder="Paste the full reply. It is stored verbatim. Expected format:&#10;${esc(REPLY_TEMPLATE)}">${draft(`rev_${h.to}`)}</textarea>
+        <div class="row"><button onclick="saveReply(this, ${esc(JSON.stringify(h.to))})">Save reply</button></div>`)}
+    </div>`).join("") : `<p class="empty">Add secondary models in Settings to start a review.</p>`) : "";
+
+  const nextSteps = `<section class="next"><h2>Next</h2>
+    ${jobFailed}
+    <div class="row"><span class="meta">Model for ${primary}'s analysis:</span> ${modelPicker("analyse")}</div>
+    ${!a ? `${cycleStep()}<p class="meta">${primary} will summarise the problem, ask clarifying questions, suggest sub-problems and propose a solution.</p>
+      <button class="primary" onclick="analyse(this)">Analyse with ${primary}</button>` : `
+      ${newReplies.length ? `<div class="step"><button class="${btn("process")}" onclick="analyse(this)">Process ${newReplies.length} new repl${newReplies.length > 1 ? "ies" : "y"} with ${primary}</button>
+        <span class="meta">from ${[...new Set(newReplies.map(r => esc(r.author)))].join(", ")}</span>
+        ${newReplies.map(r => `<div class="row"><span class="meta">${esc(r.author)}'s reply${metaOf(r).truncated ? " (cut at the size limit)" : ""}</span>
+          ${metaOf(r).parsed ? `<span class="badge approved">${metaOf(r).parsed.points.length} point(s) parsed</span>` : `<button onclick="parseReply(this, ${r.id})">Parse positions</button>`}</div>`).join("")}</div>` : ""}
+      ${questions}
+      ${next.startsWith("copy_") ? `<p class="meta">Next: send ${esc(pending.to)} the ${pending.mode === "delta" ? "update" : "full context"} in <button class="link" onclick="setTab('reviewers')">Reviewers</button>.</p>` : ""}
+      <div class="row">
+        ${!newReplies.length && !a.questions?.length ? `<button class="${btn("reanalyse")}" onclick="analyse(this)">Re-analyse${notesSince.length ? " with new notes" : ""}</button>` : ""}
+        <button class="${btn("final")}" onclick="finalise(this, ${points.length - settled})">${finalAlt ? "Regenerate" : "Generate"} final proposal</button>
+      </div>`}
+  </section>`;
+
+  const reviewersTab = `<section>
+    <div class="step"><h3>Second opinions</h3>${peers}
+      ${det("add_reviewer", `<span class="meta">+ Add reviewer</span>`, `<div class="row">
+        <input type="text" ${keep("new_reviewer")} value="${draft("new_reviewer")}" placeholder="Name, e.g. cursor" style="flex:1;min-width:160px">
+        <label style="font-weight:normal;margin:0"><input type="checkbox" id="new_reviewer_code"> can open this repository</label>
+        <button onclick="addReviewer(this)">Add</button></div>`)}</div>${cycleStep()}</section>`;
+
+  const models = [...new Set([...(state.settings.secondary_names || []), ...points.flatMap(x => Object.keys(x.positions ?? {})), ...Object.keys(preview)])]
+    .filter(m => points.some(x => posOf(x, m)));
+  // Every row has a "Your decision" line: the saved call, an auto-accepted label for agreed points
+  // (overridable), or the controls to decide.
+  const decisionRow = x => {
+    const edit = openKeys.has(`ruleedit_${x.key}`), saved = rulings[x.key], open = `openKeys.add(${jsArg(`ruleedit_${x.key}`)}); renderMain()`;
+    const unapplied = saved !== undefined && notesSince.some(n => n.body.startsWith(`Ruling on [${x.key}]`));
+    if (!edit && saved !== undefined) return `<span class="meta">Your decision:</span> ${esc(saved)} <button class="link" onclick="${open}">Change</button>${unapplied ? ` <span class="meta">Saved. Re-analyse to apply it.</span>` : ""}`;
+    if (!edit && x.status === "agreed") return `<span class="muted">Models report agreement; you have not ruled on it</span> <button class="link" onclick="${open}">Override</button>`;
+    return `<div class="row"><span class="meta">Your decision:</span>
+      <button onclick='rule(this, ${esc(JSON.stringify(x))}, ${esc(JSON.stringify(state.settings.primary_name))}, ${esc(JSON.stringify(x.primary))})'>Go with ${primary}</button>
+      ${models.filter(m => posOf(x, m)).map(m => `<button onclick='rule(this, ${esc(JSON.stringify(x))}, ${esc(JSON.stringify(m))}, ${esc(JSON.stringify(posOf(x, m)))})'>Go with ${esc(m)}</button>`).join("")}
+      <input type="text" ${keep(`rule_${x.key}`)} value="${draft(`rule_${x.key}`)}" placeholder="…or decide yourself" style="flex:1;min-width:160px">
+      <button onclick='rule(this, ${esc(JSON.stringify(x))})'>Save</button>
+      ${edit ? `<button class="link" onclick="openKeys.delete(${jsArg(`ruleedit_${x.key}`)}); renderMain()">Cancel</button>` : ""}</div>`;
+  };
+  // One line per point; a click opens the positions and the decision controls.
+  const settledOf = x => ["agreed", "decided"].includes(effStatus(x));
+  const FILTERS = { needs: ["Needs you", x => !settledOf(x)], disputed: ["Disputed", x => effStatus(x) === "disputed"], settled: ["Settled", settledOf], all: ["All", () => true] };
+  const shownPoints = points.filter(FILTERS[ui.boardFilter]?.[1] ?? (() => true));
+  const bulk = points.filter(x => x.status === "decided" && !(x.key in rulings));
+  const pointRow = x => {
+    const k = `pt_${x.key}`, open = openKeys.has(k), agreed = effStatus(x) === "agreed";
+    return `<div class="pt ${esc(effStatus(x))}">
+      <button class="head" aria-expanded="${open}" onclick="toggleKey(${jsArg(k)})">
+        <span class="meta">${open ? "▾" : "▸"}</span><span class="meta">${esc(x.key)}</span>
+        <span class="clip" title="${esc(x.topic)}">${esc(x.topic)}</span>
+        <span class="clip meta preview">${esc(x.primary)}</span>${chip(effStatus(x))}</button>
+      ${open ? `<div class="body"><div class="pos"><b>${primary}</b><div class="prose">${esc(x.primary)}</div>
+        ${models.filter(m => posOf(x, m)).map(m => `<b>${esc(m)}</b>${agreed
+          ? `<div class="clip meta" title="${esc(posOf(x, m))}">${esc(posOf(x, m))}</div>`
+          : `<div class="prose">${esc(posOf(x, m))}${!x.positions?.[m] ? ` <span class="meta">(parsed, not yet analysed)</span>` : ""}</div>`}`).join("")}</div>
+        ${decisionRow(x)}</div>` : ""}</div>`;
+  };
+  const board = points.length ? `<section>
+    <div class="row"><span class="seg" role="group" aria-label="Filter points">${Object.entries(FILTERS).map(([f, [label, keepIt]]) =>
+      `<button data-b="${f}" aria-pressed="${ui.boardFilter === f}" onclick="setBoardFilter('${f}')">${label} <span class="meta">${points.filter(keepIt).length}</span></button>`).join("")}</span>
+      <span style="flex:1"></span>
+      ${shownPoints.length ? `<button class="link meta" onclick="togglePoints(${jsArg(JSON.stringify(shownPoints.map(x => x.key)))})">${shownPoints.every(x => openKeys.has(`pt_${x.key}`)) ? "Collapse" : "Expand"} all</button>` : ""}
+      ${bulk.length ? `<button onclick="acceptAll(this)">Go with ${primary} on all ${bulk.length} it decided</button>` : ""}</div>
+    ${shownPoints.map(pointRow).join("") || `<p class="empty">No points here.</p>`}
+  </section>` : "";
+  current.bulk = bulk;
+
+  // Rounds: everything between one analysis and the next.
+  const roundOf = id => analyses.filter(x => x.id <= id).length;
+  const history = analyses.length ? `<section>${
+    analyses.map((x, i) => {
+      const inRound = c => roundOf(c.id) === i + 1;
+      const sent = of("handoff").filter(inRound).map(parse).filter(Boolean);
+      const got = reviews.filter(inRound);
+      return { i, x, sent, got };
+    }).reverse().map(({ i, x, sent, got }) => det(`round_${i}`,
+      `Round ${i + 1} · ${time(x.at)} <span class="meta">${usageText(metaOf(x)) ? `${usageText(metaOf(x))} · ` : ""}${x.changes?.length ? `${x.changes.length} change(s)` : "first analysis"}${sent.length ? ` · sent to ${sent.map(s => esc(s.to)).join(", ")}` : ""}${got.length ? ` · replies from ${got.map(r => esc(r.author)).join(", ")}` : ""}</span>`,
+      `<div class="indent">${list(x.changes)}
+        ${sent.map(s => det(`sent_${s.id}`, `<span class="meta">Sent to ${esc(s.to)} (${esc(s.mode)}) · ${time(s.at)}</span>`, `<pre>${esc(s.text)}</pre>`)).join("")}
+        ${got.map(r => det(`got_${r.id}`, `<span class="meta">Reply from ${esc(r.author)} · ${time(r.created_at)}${metaOf(r).run_id ? " · run by dlg" : ""}</span>`, `${runInfo(metaOf(r))}${usageText(metaOf(r)) ? `<div class="meta">${usageText(metaOf(r))}</div>` : ""}<pre>${esc(r.body)}</pre>`)).join("")}</div>`)).join("")}</section>` : `<p class="empty">No rounds yet.</p>`;
+
+  const decision = `<section>
+    ${finalAlt ? `<div class="final">
+      <div class="row"><b>${esc(finalAlt.title)}</b><span class="badge">consensus</span><span style="flex:1"></span>
+        <button onclick="copyText(current.alternatives.find(x => x.id === ${finalAlt.id}).description, 'Copied final proposal')">Copy</button></div>
+      <div class="prose">${esc(finalAlt.description)}</div></div>` : ""}
+    ${d.selection ? `<p>Current: <b>${d.selection.alternative_id ? esc(altTitle(d, d.selection.alternative_id)) : "Deferred"}</b> — ${esc(d.selection.rationale)} <span class="meta">${time(d.selection.created_at)}</span></p>` : ""}
+    ${det("pick", "Choose a different alternative", `
+      ${d.alternatives.map(x => `<label style="font-weight:normal"><input type="radio" name="pick" value="${x.id}" ${d.selection?.alternative_id === x.id ? "checked" : ""}> ${esc(x.title)} <span class="meta">(${esc(x.author)})</span></label>`).join("") || `<p class="empty">No alternatives yet.</p>`}
+      <div class="row"><input type="text" id="sel_rationale" placeholder="Rationale (required)"></div>
+      <div class="row"><button onclick="select(this, true)">Select solution</button><button onclick="select(this, false)">Defer problem</button></div>`)}
+    ${d.status === "selected" ? `<div class="row"><input type="text" id="appr_note" placeholder="Approval note (optional)"><button class="primary" onclick="approve(this, ${points.length - settled})">Approve selected solution</button></div>` : ""}
+    ${d.approval ? `<p>Approved ${time(d.approval.created_at)}${d.approval.note ? " — " + esc(d.approval.note) : ""}${d.approval.sent_at ? ` · sent to ${primary} ${time(d.approval.sent_at)}` : ""}</p>` : ""}
+    ${["approved", "sent"].includes(d.status) ? `
+      ${d.disagreements.some(x => x.status === "open") ? `<p class="badge warn">Open disagreements will be left out of the request.</p>` : ""}
+      <div class="row"><span class="meta">Model for implementation:</span> ${modelPicker("implement")}</div>
+      <div class="row"><button class="primary" onclick="implement(this, [${p.id}])">${d.status === "sent" ? "Send again" : "Ask " + primary + " to implement"}</button></div>` : ""}
+  </section>`;
+
+  // Before the first analysis there is nothing to tab between.
+  if (!a) { $("main").innerHTML = `<div id="jobpanel">${jobPanel()}</div>` + problem + nextSteps + renderMore(d, primary); }
+  else {
+    const needYou = points.length - settled;
+    const TABS = [["overview", "Overview", ""], ["board", "Board", needYou ? `${needYou} need you` : `${points.length}`], ["reviewers", "Reviewers", handoffs.length],
+      ["history", "History", analyses.length], ["decision", "Decision", d.approval ? "approved" : d.selection ? "selected" : ""], ["cost", "Cost", d.cost?.total.priced ? `$${d.cost.total.cost_usd.toFixed(2)}` : ""], ["more", "More", ""]];
+    const body = { overview: status + nextSteps, board, reviewers: reviewersTab, history,
+      decision: d.alternatives.length || d.selection ? decision : `<p class="empty">No alternatives yet. Generate the final proposal from Overview.</p>`, cost: costTab(d), more: renderMore(d, primary) };
+    $("main").innerHTML = problem + `<div class="strip">${statsStrip({ a, analyses, points, settled, disputed, needYou, notes, need, waiting, newReplies, primary, hasFinal, notesSince, cost: d.cost })}
+      <div class="tabs" role="tablist">${TABS.map(([k, label, n]) => `<button role="tab" aria-selected="${tab === k}" onclick="setTab('${k}')">${label}${n !== "" ? `<span class="meta">${esc(n)}</span>` : ""}</button>`).join("")}</div></div>
+      <div id="jobpanel">${jobPanel()}</div>` + (body[tab] ?? body.overview);
+  }
+  current.view = { questions: a?.questions ?? [], unsettled: points.length - settled };
+  const o = $("jobout"); if (o) o.scrollTop = o.scrollHeight;
+}
+
+// Tabs: the active one is in the URL (#<problem>/<tab>), so reload and back keep it.
+const TAB_NAMES = ["overview", "board", "reviewers", "history", "decision", "cost", "more"];
+let tab = "overview";
+function syncHash() {
+  const h = current ? `#${current.problem.id}/${tab}` : "";
+  if (location.hash !== h) history.pushState(null, "", h || location.pathname);
+}
+function setTab(t) {
+  tab = t; syncHash(); renderMain();
+  // Keep the strip in view: a shorter tab must not leave the page scrolled past its end.
+  const pr = document.querySelector("#main > section.problem");
+  if (pr) $("main").scrollTop = Math.min($("main").scrollTop, pr.offsetHeight);
+}
+const hashRoute = () => { const [, id, t] = location.hash.match(/^#(\d+)(?:\/(\w+))?/) ?? []; return { id: Number(id) || null, tab: TAB_NAMES.includes(t) ? t : "overview" }; };
+window.addEventListener("popstate", () => {
+  const r = hashRoute();
+  tab = r.tab;
+  if (r.id && r.id !== current?.problem.id) act(null, () => openProblem(r.id)); else renderMain();
+});
+
+function setBoardFilter(f) { ui.boardFilter = f; saveUI(); renderMain(); }
+function toggleKey(k) { openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); renderMain(); }
+function togglePoints(json) {
+  const keys = JSON.parse(json).map(k => `pt_${k}`), all = keys.every(k => openKeys.has(k));
+  keys.forEach(k => all ? openKeys.delete(k) : openKeys.add(k));
+  renderMain();
+}
+
+// One ruling note per point, the same text a single "Go with" click saves.
+async function acceptAll(btn) {
+  const pts = current.bulk, who = state.settings.primary_name;
+  if (!await ask(`Save "go with ${who}" as your decision on the ${pts.length} point(s) ${who} marked decided? You can change any of them later.`, "Save decisions")) return;
+  act(btn, async () => {
+    for (const x of pts) await api("POST", `/api/problems/${current.problem.id}/notes`, { body: `Ruling on [${x.key}] ${x.topic}: go with ${who} (${x.primary})` });
+  });
+}
+
+// Who is waiting on whom, from the running job, the handoffs, new replies, questions and rulings.
+function waitChips(s) {
+  const pid = current.problem.id, mine = job?.problem_ids.includes(pid), out = [];
+  const chip = (cls, text, onclick) => `<button class="wait-chip ${cls}" onclick="${onclick}">${text}</button>`;
+  if (job?.state === "running" && mine) {
+    const pr = job.progress;
+    const what = job.kind !== "cycle" ? `${esc(job.agent || state.settings.primary_name)} ${VERB[job.kind] ?? "analysing"}`
+      : !pr ? "Auto rounds starting" : !pr.round ? `Auto rounds: ${s.primary} analysing`
+      : `Auto round ${pr.round}/${pr.rounds}: ${pr.phase === "reviewing" ? `${esc(pr.agent)} reviewing` : `${s.primary} processing replies`}`;
+    out.push(`<span class="wait-chip busy">● ${what} · ${mins(job.elapsed_ms)}</span>`);
+  } else if (mine && job.kind === "cycle" && job.result?.stopped) out.push(`<span class="wait-chip">Last auto run ${esc(job.result.stopped)}</span>`);
+  s.need.forEach(h => out.push(chip("you", `${esc(h.to)} waits on you · send ${h.state === "unsent" ? "full context" : "update"}`, "setTab('reviewers')")));
+  s.waiting.forEach(h => out.push(chip("them", `You wait on ${esc(h.to)} · reply pending`, "setTab('reviewers')")));
+  if (s.newReplies.length) out.push(chip("you", `${s.primary} waits on you · process ${s.newReplies.length} repl${s.newReplies.length > 1 ? "ies" : "y"}`, "setTab('overview')"));
+  if (s.a.questions?.length) out.push(chip("you", `${s.primary} waits on you · ${s.a.questions.length} question(s)`, "setTab('overview')"));
+  if (s.needYou) out.push(chip("you", `${s.needYou} point(s) wait on your decision`, "ui.boardFilter = 'needs'; setTab('board')"));
+  return out.join("") || `<span class="meta">Nothing waiting.${!s.points.length ? ""
+    : s.notesSince.length ? " Re-analyse to apply your new notes." : s.hasFinal ? " The final proposal is ready; select and approve it under Decision." : " Every point is settled; generate the final proposal."}</span>`;
+}
+
+function statsStrip(s) {
+  current.strip = s;
+  const open = s.needYou - s.disputed;
+  return `<div class="row"><span class="badge">Round ${s.analyses.length}</span>
+      ${s.points.length ? `<div class="meter"><span style="width:${Math.round(100 * s.settled / s.points.length)}%"></span></div>
+        <span class="meta">${s.settled}/${s.points.length} settled${s.disputed ? ` · ${s.disputed} disputed` : ""}${open ? ` · ${open} open` : ""}</span>` : ""}
+      <span style="flex:1"></span><span class="meta">${s.cost ? `<button class="link" title="Cost by agent and model" onclick="setTab('cost')">${esc(usd(s.cost.total))}</button> · ` : ""}${s.notes.length} note(s) · updated ${time(s.a.at)}</span></div>
+    <div class="waits" id="waits">${waitChips(s)}</div>`;
+}
+
+// Cost tab: totals per agent and per model choice, then every run, from the "usage" audit events.
+function costTab(d) {
+  if (!d.cost) return `<p class="empty">No run has reported usage yet. Runs from before cost tracking are not counted.</p>`;
+  const rows = lines => lines.map(l => `<tr><td>${esc(l.name)}</td><td>${l.runs}${l.failed ? ` <span class="meta">(${l.failed} failed)</span>` : ""}</td><td>${esc(usd(l))}</td>
+    <td>${kTok(l.input_tokens)} / ${kTok(l.output_tokens)}</td><td>${kTok(l.cache_read_tokens)}</td><td>${mins(l.duration_ms)}</td></tr>`).join("");
+  const head = first => `<tr><th>${first}</th><th>Runs</th><th>Cost</th><th>Tokens in / out</th><th>Cache read</th><th>Time</th></tr>`;
+  const runs = d.events.filter(e => e.action === "usage").map(e => ({ e, m: metaOf({ meta: e.detail }) })).reverse();
+  return `<section>
+    <h3>By agent</h3><table class="board">${head("Agent")}${rows(d.cost.by_agent)}${rows([{ ...d.cost.total, name: "Total" }])}</table>
+    <h3>By model</h3><p class="meta">The model you selected (preset, or the runner's --model), then the one the agent reports it used.</p>
+    <table class="board">${head("Model")}${rows(d.cost.by_model)}</table>
+    <h3>Runs</h3><table class="board"><tr><th>When</th><th>Agent</th><th>Step</th><th>Selected</th><th>Usage</th></tr>
+      ${runs.map(({ e, m }) => `<tr><td class="meta">${time(e.ts)}</td><td>${esc(e.actor)}</td><td>${esc(m.op ?? "")}${m.shared > 1 ? ` <span class="meta">(shared by ${m.shared})</span>` : ""}</td>
+        <td>${esc(m.model ?? "")}</td><td class="meta">${usageText({ ...m, model: undefined })}</td></tr>`).join("")}</table>
+    <p class="meta">As each agent reported it, failed runs included; nothing is estimated. Same data: <code>dlg cost ${d.problem.id}</code>.</p>
+  </section>`;
+}
+
+const altTitle = (d, id) => d.alternatives.find(a => a.id === id)?.title ?? (id ? `#${id} (deleted)` : "general");
+
+// The ledger's full record, folded away.
+function renderMore(d, primary) {
+  const p = d.problem;
+  const raw = d.contributions.filter(c => ["proposal", "final", "implementation", "brief", "evaluation"].includes(c.kind));
+  return `<section>
+    <h3>Sub-problems</h3>
+    ${d.children.length ? `<ul class="tree">${d.children.map(c => `<li><button class="link" onclick="openProblem(${c.id})">${esc(c.title)}</button> <span class="badge ${c.status}">${c.status}</span></li>`).join("")}</ul>` : `<p class="empty">None.</p>`}
+    <div class="row"><input type="text" id="sub_title" placeholder="New sub-problem"><button onclick="newProblem(${p.id}, 'sub_title')">Add</button></div>
+
+    <h3>Alternatives</h3>
+    <div class="alts">${d.alternatives.map(a => `<div class="card ${d.selection?.alternative_id === a.id ? "chosen" : ""}">
+      <div class="row"><input type="text" id="a_title_${a.id}" value="${esc(a.title)}"></div>
+      <div class="meta">by ${esc(a.author)} · ${time(a.created_at)}</div>
+      <textarea id="a_desc_${a.id}">${esc(a.description)}</textarea>
+      ${a.evidence.map(e => `<div class="meta">“${esc(e.quote)}” — ${esc(e.source || e.author)}</div>`).join("")}
+      <div class="row">
+        <button onclick="act(this, () => api('PATCH', '/api/alternatives/${a.id}', {title: val('a_title_${a.id}'), description: $('a_desc_${a.id}').value}))">Save</button>
+        <button onclick="ask('Delete this alternative? Linked evidence and disagreements stay on the problem, unlinked from it.', 'Delete').then(ok => ok && act(this, () => api('DELETE', '/api/alternatives/${a.id}')))">Delete</button>
+      </div></div>`).join("") || `<p class="empty">No alternatives yet.</p>`}</div>
+    <div class="row" style="margin-top:10px"><input type="text" id="alt_title" placeholder="Your alternative: title"></div>
+    <div class="row"><textarea id="alt_desc" placeholder="Description"></textarea></div>
+    <div class="row"><button onclick="act(this, () => api('POST', '/api/problems/${p.id}/alternatives', {title: val('alt_title'), description: $('alt_desc').value}))">Add alternative</button></div>
+
+    ${d.disagreements.length ? `<h3>Disagreements <span class="meta">(earlier review format)</span></h3>
+    ${d.disagreements.map(x => `<div class="dis ${x.status === "open" ? "" : "closed"}">
+      <div><b>${esc(x.summary)}</b> <span class="badge ${x.status === "open" ? "warn" : ""}">${x.status}</span></div>
+      <div class="meta">raised by ${esc(x.raised_by)} · re: ${esc(altTitle(d, x.alternative_id))}</div>
+      ${x.status === "open" ? `<div class="row"><input type="text" id="d_note_${x.id}" placeholder="Your reasoning"></div>
+        <div class="row"><button onclick="resolve(this, ${x.id}, 'accept')">Reviewer is right</button>
+          <button onclick="resolve(this, ${x.id}, 'reject')">Keep current position</button>
+          <button onclick="resolve(this, ${x.id}, 'defer')">Defer</button></div>`
+      : `<div class="meta">You chose: ${esc(x.resolution)}${x.resolution_note ? " — " + esc(x.resolution_note) : ""}</div>`}
+    </div>`).join("")}` : ""}
+
+    ${raw.length ? `<h3>Raw agent output</h3>${raw.map(c => det(`raw_${c.id}`, `<span class="meta">${esc(c.kind)} · ${esc(c.author)} · ${time(c.created_at)}</span>`, `<pre>${esc(c.body)}</pre>`)).join("")}` : ""}
+
+    <h3>Audit trail</h3>
+    <table>${d.events.map(e => `<tr><td class="meta">${time(e.ts)}</td><td>${esc(e.actor)}</td><td>${esc(e.action)}</td><td class="meta">${esc(e.detail === "{}" ? "" : e.detail)}</td></tr>`).join("")}</table>
+  </section>`;
+}
+
+function newProblem(parentId, inputId) {
+  const title = val(inputId);
+  if (!title) return;
+  act(null, async () => { const { id } = await api("POST", "/api/problems", { title, parent_id: parentId }); $(inputId).value = ""; await openProblem(id); });
+}
+
+function resolve(btn, id, resolution) {
+  const body = { resolution, note: val(`d_note_${id}`) };
+  if (resolution === "own") body.title = val(`d_own_${id}`);
+  act(btn, () => api("POST", `/api/disagreements/${id}/resolve`, body));
+}
+
+function select(btn, pick) {
+  const checked = document.querySelector("input[name=pick]:checked");
+  if (pick && !checked) { fieldError(btn, "Pick an alternative first."); return; }
+  act(btn, () => api("POST", `/api/problems/${current.problem.id}/select`,
+    { alternative_id: pick ? Number(checked.value) : null, rationale: val("sel_rationale") }));
+}
+
+async function implement(btn, ids) {
+  const own = ids.length === 1 && current?.problem.id === ids[0] ? current.view.unsettled : 0;
+  if (!await ask(`Ask ${state.settings.primary_name} to implement ${ids.length} approved problem(s)? It will modify files in ${state.settings.workdir}.` +
+      (own ? `\n\n${own} board point(s) have no decision yet; they are left out of the request.` : ""), "Implement")) return;
+  act(btn, async () => {
+    const { job_id } = await api("POST", "/api/implement", { problem_ids: ids, model: modelChoice("implement") });
+    dismissed.delete(job_id);
+    job = await api("GET", `/api/jobs/${job_id}`);
+  });
+}
+
+function openSettings() {
+  $("s_primary_name").value = state.settings.primary_name ?? "";
+  $("s_secondary_names").value = (state.settings.secondary_names || []).join(", ");
+  $("s_secondary_with_code").value = (state.settings.secondary_with_code || []).join(", ");
+  renderCommands();
+  $("settings").showModal();
+}
+
+// Agent commands and workdir are set only in a terminal (the server refuses them), so this
+// shows them read-only and offers fixed paste lines; only knownAgents names get a Copy button.
+function renderCommands() {
+  const s = state.settings, agents = state.agents ?? [];
+  const cmd = v => v ? `<code>${esc(v)}</code>` : `<span class="empty">not set</span>`;
+  const reviewers = [...new Set([...(s.secondary_names ?? []), ...Object.keys(s.secondary_commands ?? {})])];
+  const paste = line => `<div class="row"><code>${esc(line)}</code>
+    <button onclick="copyText(${esc(JSON.stringify(line))}, 'Copied. Paste it in a terminal in this project.')">Copy</button></div>`;
+  $("s_commands").innerHTML = `<h3>Agent commands</h3>
+    <p class="meta">dlg runs these on your account, so they can be changed only in a terminal. This page shows them; it cannot set them.</p>
+    <table>
+      <tr><td>Primary (investigate, read-only)</td><td>${cmd(s.primary_command)}</td></tr>
+      <tr><td>Implement (can write files)</td><td>${cmd(s.implement_command)}</td></tr>
+      <tr><td>Working directory</td><td>${cmd(s.workdir)}</td></tr>
+      ${reviewers.map(n => `<tr><td>Reviewer ${esc(n)}</td><td>${s.secondary_commands?.[n]
+        ? `${cmd(s.secondary_commands[n])} · ${runnable(n) ? "approved" : "<b>not approved</b>"}` : `<span class="empty">copy-paste (no runner)</span>`}</td></tr>`).join("")}
+    </table>
+    <details open><summary><b>Wiki: how to add or change agents</b></summary>
+      <p class="meta">Run these in a terminal inside this project (where <code>.decision-ledger/</code> is). dlg prints exactly what it will store and asks <code>Allow? [y/N]</code>.
+        Read the pasted line before you press Enter, then read dlg's echo before you type y.</p>
+      <ul class="meta">
+        <li>The primary investigates read-only, but what it reads is sent to its vendor.</li>
+        <li>The implement command can write files in the working directory.</li>
+        <li>A reviewer runner gets the handoff on stdin; what it reads is sent to its vendor. A y at the prompt approves it, so the Run buttons and auto rounds can start it.</li>
+      </ul>
+      ${agents.map(a => `<h3>${esc(a.name)}</h3>
+        <p class="meta">Primary: <code>${esc(a.primary)}</code> · implement: <code>${esc(a.implement)}</code></p>
+        ${paste(`dlg config use ${a.name}`)}
+        <p class="meta">As a reviewer (runs <code>${esc(a.primary)}</code>):</p>
+        ${paste(`dlg config set-runner ${a.name}`)}`).join("")}
+      <h3>Using different models</h3>
+      <p class="meta"><b>Primary (claude).</b> Add model presets once; then pick model, context and reasoning per run beside
+        "Model for ${esc(s.primary_name)}'s analysis" (Overview) and "Model for implementation" (Decision), and "make default" to keep a choice.</p>
+      ${paste("dlg config init-models claude")}
+      <p class="meta">Or one preset of your own (key, label, context label, then the choices):</p>
+      <pre>dlg config add-model opus-1m "Opus 1M" "1M" --model opus --context 1m --effort high</pre>
+      <p class="meta"><b>Reviewer (cursor).</b> No setup: its card in the Reviewers tab lists <code>cursor-agent --list-models</code> as model,
+        context and reasoning; "make default" is what auto rounds use. In a terminal: <code>dlg run &lt;id&gt; cursor --model &lt;id&gt;</code>.
+        If the runner command already has <code>--model</code>, that model is used and the picker is off.</p>
+      <p class="meta"><b>A second Claude model as a reviewer.</b> Give it its own name (not ${esc(s.primary_name)}), add that name under
+        "Secondary models" above, then set and approve its runner:</p>
+      <pre>dlg config set-runner sonnet 'claude -p --model sonnet'</pre>
+      <p class="meta">A model from another vendor (through cursor) is a more independent check than a second Claude model.
+        The Cost tab shows each run's selected model next to the one the agent reports it used.</p>
+      <h3>Other agents (type these yourself)</h3>
+      <pre>dlg config set-primary &lt;name&gt; '&lt;command&gt;' ['&lt;implement-command&gt;']
+dlg config set-runner &lt;agent&gt; '&lt;command&gt;'
+dlg config set-workdir &lt;dir&gt;</pre>
+      <p class="meta">Quote each command so it is one word. In a script (no terminal), use, set-primary and set-workdir need --yes right after the subcommand; set-runner stores the command unapproved. A --yes anywhere else becomes part of the command, and the echo shows it.</p>
+    </details>`;
+}
+
+// Commands change in the terminal, so re-read them when the user comes back to this tab.
+const refreshSettings = () => { if ($("settings").open) refresh().then(renderCommands, e => showError(e.message)); };
+window.addEventListener("focus", refreshSettings);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshSettings(); });
+
+function saveSettings() {
+  const body = { primary_name: val("s_primary_name") };   // commands and workdir are CLI-only; the server refuses them
+  const names = id => [...new Set(val(id).split(",").map(s => s.trim()).filter(Boolean))];
+  body.secondary_names = names("s_secondary_names");
+  body.secondary_with_code = names("s_secondary_with_code");
+  act(null, async () => { await api("PUT", "/api/settings", body); $("settings").close(); });
+}
+
+async function importFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  act(null, async () => { await api("POST", "/api/import", JSON.parse(await file.text())); input.value = ""; });
+}
+
+(async () => {
+  applyLayout();
+  loadModels(false).then(() => current && renderMain());   // a slow list command must not delay the page
+  await refresh();
+  loadReviewerModels(false).then(() => current && renderMain());
+  const r = hashRoute(), exists = id => id && state.problems.some(p => p.id === id);
+  tab = r.tab;
+  const id = exists(r.id) ? r.id : state.settings.last_problem_id;
+  if (exists(id)) await openProblem(id);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+# dlg (Decision Ledger)
+
+> Single-binary, local-first ledger of engineering decisions made with several AI agents. A primary agent analyses, reviewers challenge, the user decides. No model code; it pipes text to and from the agents you already use.
+
+Full agent guide: AGENTS.md. Human docs: README.md.
+
+## Commands (all inside a project with .decision-ledger/)
+
+- `dlg problems [--json]`: list problems
+- `dlg status [id] [--json]`: state, reviewers waiting, new replies
+- `dlg handoff <id> <to> [--json] [--peek]`: print the text a reviewer should answer
+- `dlg review <id> <author> [--file F]`: store a reply (stdin), warnings on stderr
+- `dlg note <id> [text]`: add a note
+- `dlg parse <review-id> [--json]`: per-point positions of a stored reply
+- `dlg run <id> <agent>`: opt-in; pipe the handoff to the agent's configured command and store its stdout as a review
+- `dlg config show | set-runner <agent> <command> | unset-runner <agent>`: runner setup (command line only)
+- `dlg mcp`: MCP stdio server with the same operations (dlg_problems, dlg_status, dlg_handoff, dlg_review, dlg_note, dlg_parse)
+- `dlg serve`: local UI and HTTP API on 127.0.0.1:8765 (writes need header `X-Ledger: 1`)
+
+## Reply format
+
+```
+SUMMARY: your view in 2-3 lines
+SOLUTION: the approach you recommend
+[P1] AGREE | DISAGREE: why   (one line per point for review)
+NEW: points missed (optional)
+OPEN: questions (optional)
+```
+
+## Recipes
+
+- CLI agent: `dlg handoff 3 claude | claude -p | dlg review 3 claude`
+- IDE agent: MCP server `{"command":"dlg","args":["mcp"]}`
+- Script: `GET /api/problems/{id}/handoffs/{to}`, `POST /api/problems/{id}/reviews {"author","body"}`
+- Chat-only model: `dlg handoff 3 gemini | pbcopy`, paste the answer back with `dlg review`
+
+## Limits
+
+Agents never select, approve or resolve; only the user does.
