@@ -1,5 +1,7 @@
 # Decision Ledger (`dlg`)
 
+Developed by [lijose](https://github.com/lijose). Released under the [MIT License](LICENSE).
+
 A local-first, single-binary ledger of engineering decisions made with multiple AI agents, for **one user**. A primary agent investigates and proposes, secondary agents challenge, and **the user decides**. The record is durable, human-owned and resumable.
 
 - [Problem and idea](#problem-and-idea)
