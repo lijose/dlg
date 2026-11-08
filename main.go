@@ -20,8 +20,9 @@ import (
 
 // Investigation runs read-only; implementation needs write access.
 var knownAgents = []struct{ name, primary, implement string }{
-	{"codex", "codex exec", "codex exec --full-auto"},
+	{"codex", "codex exec", "codex exec --sandbox workspace-write"},
 	{"claude", "claude -p", "claude -p --permission-mode acceptEdits"},
+	{"cursor", "cursor-agent -p --mode ask", "cursor-agent -p --force"},
 }
 
 func findLedger(start string) string {
@@ -57,24 +58,8 @@ func initLedger() error {
 	}
 	defer l.close()
 	settings := D{"workdir": root}
-	global, _ := readGlobalConfig() // a global primary replaces autodetection
-	for _, a := range knownAgents {
-		if _, ok := global["primary_command"]; ok {
-			break
-		}
-		if _, err := exec.LookPath(a.name); err != nil {
-			continue
-		}
-		others := []string{}
-		for _, n := range []string{"claude", "gemini", "codex"} {
-			if n != a.name {
-				others = append(others, n)
-			}
-		}
-		settings["primary_name"], settings["primary_command"], settings["implement_command"] = a.name, a.primary, a.implement
-		settings["secondary_names"] = others[:2]
-		break
-	}
+	// Detection belongs in onboarding, not configuration. New projects inherit global
+	// defaults without silently authorizing a tool or adding unavailable reviewers.
 	if _, err := l.updateSettings(settings, "user"); err != nil {
 		return err
 	}

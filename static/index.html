@@ -164,19 +164,20 @@
     section h2.title { font-size:20px; }
   }
 </style>
+<link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
 <header>
-  <h1>Decision Ledger</h1>
-  <button onclick="openSettings()">Settings &amp; wiki</button>
-  <button onclick="location.href='/api/export'">Export JSON</button>
-  <button onclick="document.getElementById('importFile').click()">Import JSON</button>
+  <h1>dlg<span>.</span><span class="project-name" id="projectLabel"></span></h1>
+  <button onclick="openSettings()">Agents</button>
+  <button class="link" onclick="openUpdates()">About</button>
+  <details class="header-data"><summary>Data</summary><div class="menu"><button class="link" onclick="location.href='/api/export'">Export ledger</button><button class="link" onclick="$('importFile').click()">Import ledger</button></div></details>
   <input type="file" id="importFile" accept=".json" hidden onchange="importFile(this)">
 </header>
 <div id="layout">
   <aside>
-    <div class="row side-top"><button class="link" id="collapseBtn" onclick="toggleSide()" aria-label="Collapse sidebar">«</button><input type="text" id="newTitle" placeholder="New problem title"><button class="primary" onclick="newProblem(null, 'newTitle')">Add</button></div>
-    <div class="row"><input type="search" id="treeSearch" placeholder="Search" oninput="treeQuery = this.value; renderTree()">
+    <div class="row side-top"><button class="link" id="collapseBtn" onclick="toggleSide()" aria-label="Collapse sidebar">«</button><input type="text" id="newTitle" aria-label="New problem title" placeholder="New problem title"><button class="primary" onclick="newProblem(null, 'newTitle')">Add</button></div>
+    <div class="row"><input type="search" id="treeSearch" aria-label="Search problems" placeholder="Search" oninput="treeQuery = this.value; renderTree()">
       <span class="seg" role="group" aria-label="Show"><button data-f="active" onclick="setTreeFilter('active')">Active</button><button data-f="all" onclick="setTreeFilter('all')">All</button></span></div>
     <div id="tree"></div>
     <div class="row" id="sendAll"></div>
@@ -185,18 +186,12 @@
   <main id="main"><p class="empty">Create or open a problem.</p></main>
 </div>
 
-<dialog id="settings">
-  <h3>Settings</h3>
-  <label>Primary agent name</label><input type="text" id="s_primary_name">
-  <label>Secondary models you copy to (comma-separated, e.g. gemini, gpt, cursor)</label><input type="text" id="s_secondary_names">
-  <label>Of those, the ones that can open this repository themselves (e.g. cursor)</label><input type="text" id="s_secondary_with_code">
-  <div id="s_commands"></div>
-  <div class="row" style="justify-content:flex-end;margin-top:12px">
-    <button onclick="document.getElementById('settings').close()">Cancel</button>
-    <button class="primary" onclick="saveSettings()">Save</button>
-  </div>
-</dialog>
-<dialog id="cancelDlg">
+<dialog id="settings" aria-label="Agent settings"><div id="settingsContent"></div></dialog>
+<dialog id="agentDialog" aria-label="Connect agent"><div id="agentForm"></div></dialog>
+<dialog id="proposalDialog" aria-labelledby="proposalDialogTitle" onclose="returnProposalFocus()"><div id="proposalContent"></div></dialog>
+<dialog id="replyDialog" aria-label="Saved reply"><div id="replyContent"></div></dialog>
+<dialog id="updatesDialog" aria-label="About and updates"><div id="updatesContent"></div></dialog>
+<dialog id="cancelDlg" aria-label="Stop running job">
   <h3>Stop the running job?</h3>
   <p class="meta">The agent may already have changed files. Stopping does not undo them.</p>
   <div class="row">
@@ -206,7 +201,7 @@
   </div>
   <p id="revertNote" class="meta"></p>
 </dialog>
-<dialog id="confirmDlg">
+<dialog id="confirmDlg" aria-labelledby="confirmMsg">
   <p id="confirmMsg" class="prose"></p>
   <div class="row" style="justify-content:flex-end">
     <button autofocus onclick="$('confirmDlg').close()">Cancel</button>
@@ -240,7 +235,7 @@ async function api(method, path, body) {
 async function act(btn, fn, busyText) {
   const label = btn?.textContent;
   if (btn) { btn.disabled = true; if (busyText) btn.textContent = busyText; }
-  try { const seen = errorSeq; await fn(); if (errorSeq === seen) clearError(); await refresh(); }
+  try { const seen = errorSeq; await fn(); persistDrafts(); if (errorSeq === seen) clearError(); await refresh(); }
   catch (e) { showError(e.message); await refresh(); }
   finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
 }
@@ -271,7 +266,11 @@ function fieldError(btn, msg) {
 }
 
 async function refresh() {
-  state = await api("GET", "/api/state");
+  const previousCommand=state.settings.primary_command;
+  [state] = await Promise.all([api("GET", "/api/state"), loadSetup()]);
+  restoreProjectDrafts();
+  if(previousCommand && previousCommand !== state.settings.primary_command) { delete drafts.model_analyse; delete drafts.model_implement; }
+  await loadModels(false);
   renderTree();
   if (current) {
     try { current = await api("GET", `/api/problems/${current.problem.id}`); }
@@ -282,7 +281,9 @@ async function refresh() {
 }
 
 async function openProblem(id) {
-  current = await api("GET", `/api/problems/${id}`);
+  const detail = await api("GET", `/api/problems/${id}`);
+  switchProblemDrafts(id);
+  current = detail;
   syncHash();
   await api("PUT", "/api/settings", { last_problem_id: id });
   await loadJob();
@@ -297,6 +298,11 @@ const dismissed = new Set();       // finished jobs the user closed
 let models = [], modelsError = "";
 
 async function loadModels(refresh) {
+  if (setup.configured === false && setup.tool === "codex" && !state.settings.model_list_command) {
+    models = setup.agents.find(a => a.name === "codex")?.models ?? [];
+    modelsError = "";
+    return;
+  }
   try { const r = await api("GET", "/api/models" + (refresh ? "?refresh=1" : "")); models = r.models; modelsError = r.error || ""; }
   catch (e) { modelsError = e.message; }
 }
@@ -321,8 +327,7 @@ function pollJob() {
       if (job?.id !== id) return;
       job = j;
       if (j.state === "running") { paintJob(); pollJob(); return; }
-      // Answers stay in their inputs until the analysis succeeded, so a failed run can be retried.
-      if (j.kind === "analyse" && j.state === "done") Object.keys(drafts).filter(k => k.startsWith("q_")).forEach(k => delete drafts[k]);
+      // Only explicit saves clear drafts; a completed run must not discard unsent input.
       await refresh();
     } catch (e) {
       if (job?.id === id) { job = { ...job, state: "failed", error: e.message }; renderMain(); }
@@ -357,8 +362,9 @@ function jobPanel() {
   }[j.state];
   return `<section class="job"><div class="row">${head}</div>
     ${j.error ? `<div class="error">${esc(j.error)}</div>` : ""}
-    ${j.state !== "running" ? (j.output.trim() ? det(`jobout_${j.id}`, `<span class="meta">Show output</span>`, `<pre>${esc(j.output)}</pre>`) : "")
-      : j.output.trim() ? `<pre id="jobout">${esc(j.output)}</pre>` : `<p class="meta">No output yet.</p>`}</section>`;
+    ${reviewerGitRecovery(j)}
+    ${j.state !== "running" ? (j.output.trim() ? det(`jobout_${j.id}`, `<span class="meta">Technical details</span>`, `<pre>${esc(j.output)}</pre>`) : "")
+      : j.output.trim() ? det(`jobout_${j.id}`, `<span class="meta">Technical details</span>`, `<pre id="jobout">${esc(j.output)}</pre>`) : `<p class="meta">Working…</p>`}</section>`;
 }
 
 // Runs the reviewer's CLI as a background job. Setting and approving the command stay on the command line.
@@ -433,7 +439,10 @@ function presetChoices(list, key) {
   return {
     model: cur ? (cur.model ? "m:" + cur.model : "k:" + cur.key) : "none",
     structured: !!cur?.model, context: ctx, effort,
-    models: [...uniq(m => m.model).map(v => ({ v: "m:" + v, label: v })), ...list.filter(m => !m.model).map(m => ({ v: "k:" + m.key, label: m.label }))],
+    models: [...uniq(m => m.model).map(v => {
+      const catalog = structured.find(m => m.model === v && m.key.startsWith("codex:"));
+      return { v: "m:" + v, label: catalog?.label || v };
+    }), ...list.filter(m => !m.model).map(m => ({ v: "k:" + m.key, label: m.label }))],
     contexts: uniq(m => m.context || "").map(v => ({ v, label: v || "default", off: !has(model, v) })),
     efforts: uniq(m => m.effort || "").map(v => ({ v, label: v || "default", off: !has(model, ctx, v) })),
     pick(field, value) {
@@ -463,7 +472,7 @@ function modelPicker(stage) {
   const c = presetChoices(models, cur === "none" ? "" : cur);
   return `<span class="row" style="margin:0">
     ${presetSelects(c, field => `pickPreset('${stage}', '${field}', this.value)`, "Base command (no preset)")}
-    ${(cur === "none" ? "" : cur) !== def ? `<button class="link meta" onclick="setDefaultModel(this, '${stage}')">make default</button>` : ""}
+    ${(cur === "none" ? "" : cur) !== def ? `<button class="link meta" onclick="setDefaultModel(this, '${stage}')">make project default</button>` : ""}
     <button class="link meta" title="Refresh the model list" onclick="refreshModels(this)">↻</button>
     ${modelsError ? `<span class="error meta">${esc(modelsError)}</span>` : ""}</span>`;
 }
@@ -473,7 +482,7 @@ const reviewerModels = {};          // agent -> { models, error, fixed }
 async function loadReviewerModels(refresh) {
   const names = Object.keys(state.settings.secondary_commands ?? {}).filter(n => (state.settings.secondary_names ?? []).includes(n));
   await Promise.all(names.map(async n => {
-    try { reviewerModels[n] = await api("GET", `/api/runners/${encodeURIComponent(n)}/models${refresh ? "?refresh=1" : ""}`); }
+    try { reviewerModels[n] = await api("GET", `/api/agent-models?reviewer=${encodeURIComponent(n)}${refresh ? "&refresh=1" : ""}`); }
     catch (e) { reviewerModels[n] = { models: [], error: e.message }; }
   }));
 }
@@ -488,7 +497,7 @@ function reviewerPicker(to) {
   const cur = reviewerChoice(to), saved = state.settings.review_models?.[to] ?? "", c = presetChoices(r.models, cur === "none" ? "" : cur);
   return `<span class="row" style="margin:0">
     ${presetSelects(c, field => `pickReviewerModel(${jsArg(to)}, '${field}', this.value)`, "Runner default")}
-    ${(cur === "none" ? "" : cur) !== saved ? `<button class="link meta" onclick="setReviewerDefault(this, ${jsArg(to)})">make default</button>` : ""}
+    ${(cur === "none" ? "" : cur) !== saved ? `<button class="link meta" onclick="setReviewerDefault(this, ${jsArg(to)})">make project default</button>` : ""}
     <button class="link meta" title="Refresh ${esc(to)}'s model list" onclick="act(this, () => loadReviewerModels(true))">↻</button>
     ${r.error ? `<span class="error meta">${esc(r.error)}</span>` : ""}</span>`;
 }
@@ -591,10 +600,16 @@ function renderTree() {
 
 const drafts = {};                 // unsaved text in inputs, kept across re-renders
 const openKeys = new Set();        // which <details> the user expanded
-const draft = id => esc(drafts[id] ?? "");
+const draft = (id, fallback = "") => esc(drafts[id] ?? fallback);
+async function writeFields(method, path, body, ...keys) {
+  const result = await api(method, path, body);
+  keys.forEach(key => delete drafts[key]);
+  persistDrafts();
+  return result;
+}
 // Keys can contain agent- or import-supplied text: quote them as JS strings, then escape for the attribute.
 const jsArg = s => esc(JSON.stringify(String(s)));
-const keep = id => `id="${esc(id)}" oninput="drafts[${jsArg(id)}] = this.value"`;
+const keep = id => `id="${esc(id)}" data-draft="${esc(id)}" oninput="updateDraft(${jsArg(id)}, this.value)"`;
 const det = (key, summary, body, cls = "") =>
   `<details class="${cls}" ${openKeys.has(key) ? "open" : ""} ontoggle="this.open ? openKeys.add(${jsArg(key)}) : openKeys.delete(${jsArg(key)})"><summary>${summary}</summary>${body}</details>`;
 const list = items => items?.length ? `<ul>${items.map(i => `<li>${esc(i)}</li>`).join("")}</ul>` : "";
@@ -646,6 +661,7 @@ function usageText(m) {
   return [u.models?.join(" + ") || m.model, u.duration_ms && mins(u.duration_ms), u.turns && `${u.turns} turns`,
     (u.input_tokens || u.output_tokens) && `${kTok(u.input_tokens ?? 0)} in / ${kTok(u.output_tokens ?? 0)} out`,
     u.cache_read_tokens && `${kTok(u.cache_read_tokens)} cache read`,
+    u.reasoning_output_tokens && `${kTok(u.reasoning_output_tokens)} reasoning`, u.tool_calls && `${u.tool_calls} tool calls`, u.partial && "partial usage",
     u.cost_usd != null ? `$${u.cost_usd.toFixed(2)}` : "no cost reported", m.failed && "failed"].filter(Boolean).map(esc).join(" · ");
 }
 
@@ -662,7 +678,7 @@ function saveReply(btn, to) {
   const id = `rev_${to}`, body = (drafts[id] ?? "").trim();
   if (!body) { fieldError(btn, "Paste the reply first."); return; }
   act(btn, async () => {
-    const r = await api("POST", `/api/problems/${current.problem.id}/reviews`, { author: to, body });
+    const r = await api("POST", `/api/problems/${current.problem.id}/reviews`, { author: to, body, meta: {manual:true,label:state.settings.reviewer_labels?.[to] || ""} });
     delete drafts[id]; openKeys.delete(`paste_${to}`);
     if (r.warnings?.length) showError(`Reply saved, but:\n- ${r.warnings.join("\n- ")}\n\nIt may be cut off or not in the requested format. Ask ${to} to continue or reply in the format.`);
   });
@@ -683,15 +699,10 @@ function addNote(btn) {
 
 // Saves the answers as notes (the agent sees all notes), then starts the analysis as a background job.
 // Answers already saved as a note are not saved twice, and the inputs are cleared only when the job succeeds.
-function analyse(btn, questions = []) {
+function analyse(btn) {
+  if (!setup.configured) { openAgent('primary'); return; }
   const pid = current.problem.id;
   act(btn, async () => {
-    const saved = new Set(current.contributions.filter(c => c.kind === "context").map(c => c.body));
-    for (const [i, q] of questions.entries()) {
-      // A blank answer means "accept the agent's assumption".
-      const a = (drafts[`q_${i}`] ?? "").trim() || "(left blank; proceed with your stated assumption)", body = `Q: ${q.question} A: ${a}`;
-      if (!saved.has(body)) await api("POST", `/api/problems/${pid}/notes`, { body });
-    }
     const { job_id } = await api("POST", `/api/problems/${pid}/analyse`, { model: modelChoice("analyse") });
     dismissed.delete(job_id);
     job = await api("GET", `/api/jobs/${job_id}`);
@@ -710,7 +721,7 @@ function rule(btn, point, model, position) {
 
 async function approve(btn, unsettled) {
   if (unsettled && !await ask(`${unsettled} point(s) have no decision yet. Approve anyway?`, "Approve")) return;
-  act(btn, () => api("POST", `/api/problems/${current.problem.id}/approve`, { note: val("appr_note") }));
+  act(btn, () => writeFields("POST", `/api/problems/${current.problem.id}/approve`, { note: val("appr_note") }, "appr_note"));
 }
 
 // Reviewers live in settings, so every problem offers the same ones.
@@ -738,8 +749,8 @@ async function finalise(btn, unsettled) {
   });
 }
 
-function renderMain() {
-  if (!current) { $("main").innerHTML = `<p class="empty">Create or open a problem.</p>`; return; }
+function renderMainContent() {
+  if (!current) { $("main").innerHTML = renderWelcome(); return; }
   const d = current, p = d.problem, primary = esc(state.settings.primary_name);
   const of = kind => d.contributions.filter(c => c.kind === kind);
   const analyses = of("analysis").map(parse).filter(Boolean);
@@ -767,10 +778,11 @@ function renderMain() {
   // Once every point is settled, a reviewer update is optional: the next step is the final proposal.
   const allSettled = points.length > 0 && settled === points.length;
   const hasFinal = d.alternatives.some(x => x.author === "consensus");
-  const next = !a ? "analyse" : newReplies.length ? "process" : a.questions?.length ? "answer"
+  const unanswered = (a?.questions || []).filter((_,i) => !questionAnswer(a,i)).length;
+  const next = !a ? "analyse" : unanswered ? "answer" : newReplies.length ? "process"
     : notesSince.length ? "reanalyse" : allSettled ? (hasFinal ? "" : "final") : pending ? `copy_${pending.to}` : "";
-  const btn = key => next === key ? "primary" : "";
-  const editing = !a || openKeys.has("edit");
+  const btn = () => ""; // The recommended action supplies the single Overview emphasis.
+  const editing = openKeys.has("edit");
 
   const need = allSettled ? [] : handoffs.filter(h => ["unsent", "changed"].includes(h.state));
   const jobFailed = job?.kind === "analyse" && job.state === "failed" && job.problem_ids.includes(p.id) && !dismissed.has(job.id)
@@ -780,10 +792,10 @@ function renderMain() {
   const problem = `<section class="problem">
     <div class="meta">${d.ancestors.map(x => `<a href="#" onclick="openProblem(${x.id});return false">${esc(x.title)}</a>`).join(" › ")}</div>
     ${editing ? `
-      <div class="row"><input type="text" id="p_title" value="${esc(p.title)}"><span class="badge ${d.status}">${d.status}</span></div>
-      <textarea id="p_context" placeholder="Describe the problem: symptoms, constraints, links…">${esc(p.context)}</textarea>
+      <div class="row"><input type="text" ${keep("p_title")} value="${drafts.p_title !== undefined ? draft("p_title") : esc(p.title)}"><span class="badge ${d.status}">${d.status}</span></div>
+      <textarea ${keep("p_context")} placeholder="Describe the problem: symptoms, constraints, links…">${drafts.p_context !== undefined ? draft("p_context") : esc(p.context)}</textarea>
       <div class="row">
-        <button onclick="act(this, async () => { await api('PATCH', '/api/problems/${p.id}', {title: val('p_title'), context: $('p_context').value}); openKeys.delete('edit'); })">Save</button>
+        <button onclick="act(this, async () => { await api('PATCH', '/api/problems/${p.id}', {title: val('p_title'), context: $('p_context').value}); openKeys.delete('edit'); delete drafts.p_title; delete drafts.p_context; })">Save</button>
         ${a ? `<button onclick="openKeys.delete('edit'); renderMain()">Cancel</button>` : ""}
         <span style="flex:1"></span>
         <button onclick="deleteProblem(this, ${p.id})">Delete…</button>
@@ -791,14 +803,15 @@ function renderMain() {
     : `<div class="row"><h2 class="title">${esc(p.title)}</h2><span class="badge ${d.status}">${d.status}</span><span style="flex:1"></span>
         <button class="link" onclick="openKeys.add('edit'); renderMain()">Edit</button></div>
       ${p.context ? `<div class="clamp">${esc(p.context)}</div>` : ""}`}
-    ${det("notes", `Notes &amp; answers <span class="meta">(${notes.length})</span>`, `
+    ${det("notes", `Your input <span class="meta">(${notes.length})</span>`, `
       ${notes.map(c => `<div class="meta">• ${esc(c.body)} — ${time(c.created_at)}</div>`).join("")}
       <div class="row"><input type="text" ${keep("p_note")} value="${draft("p_note")}" placeholder="Add context the agents should know"><button onclick="addNote(this)">Add note</button></div>`)}
   </section>`;
 
   const status = a ? `<section class="status">
-    <div class="row"><b class="sol">${esc(a.solution.title)}</b></div>
+    <div class="eyebrow">Latest proposal</div><div class="row"><b class="sol">${esc(a.solution.title)}</b></div>
     <p>${esc(a.summary)}</p>
+    ${a.changes?.length ? `<div class="changes-list"><h3>What changed this round</h3>${list(a.changes)}</div>` : ""}
     ${det("details", "Solution details", `<div class="analysis">
       <h3>Proposed solution</h3><div class="prose">${esc(a.solution.description)}</div>
       ${(a.solution.evidence ?? []).map(e => `<div class="meta">“${esc(e.quote)}” — ${esc(e.source)}</div>`).join("")}
@@ -812,46 +825,44 @@ function renderMain() {
     </div>`)}
   </section>` : "";
 
-  const questions = a?.questions?.length ? `<div class="step">
-      <h3>${primary} has ${a.questions.length} question${a.questions.length > 1 ? "s" : ""}</h3>
-      ${a.questions.map((q, i) => `<label style="font-weight:normal">${esc(q.question)} <span class="meta">assumed: ${esc(q.assumption)}</span></label>
-        <input type="text" ${keep(`q_${i}`)} value="${draft(`q_${i}`)}" placeholder="Your answer (leave empty to keep the assumption)">`).join("")}
-      <div class="row"><button class="${btn("answer")}" onclick="analyse(this, current.view.questions)">Re-analyse with answers</button></div>
-    </div>` : "";
+  const questions = renderQuestions(a);
 
   const peers = a ? (handoffs.length ? handoffs.map(h => `<div class="peer ${h.state}">
       <div class="row"><b>${esc(h.to)}</b>
         <button class="link meta" title="${h.has_code ? "Gets pointers to the code instead of quotes" : "Gets the code facts quoted, since it cannot see the repository"}" onclick="toggleCodeAccess(this, ${esc(JSON.stringify(h.to))})">${h.has_code ? "repo access" : "no repo access"}</button><span class="badge ${h.state === "replied" ? "approved" : h.state === "sent" ? "wait" : "selected"}">${PEER[h.state]}</span>
         <span style="flex:1"></span>
         ${runnerButton(h, btn(`copy_${h.to}`))}
-        <button class="${state.settings.secondary_commands?.[h.to] ? "" : btn(`copy_${h.to}`)}" onclick="copyHandoff(this, ${esc(JSON.stringify(h.to))})">${h.state === "unsent" ? "Copy full context" : h.state === "changed" ? "Copy update (delta)" : "Copy again"}</button></div>
+        <button class="${state.settings.secondary_commands?.[h.to] ? "" : btn(`copy_${h.to}`)}" onclick="copyHandoff(this, ${esc(JSON.stringify(h.to))})">${h.state === "unsent" ? "Copy review request" : h.state === "changed" ? "Copy review request" : "Copy again"}</button></div>
+      ${(() => { const r=reviews.filter(r=>r.author===h.to).at(-1);return r?`<p class="answer-saved">✓ ${reviewLabel(r,a)}</p><div class="row"><button onclick="viewReply(${r.id})">View reply</button><span class="meta">${time(r.created_at)}</span></div>`:''; })()}
       ${reviewerPicker(h.to) ? `<div class="row">${reviewerPicker(h.to)}</div>` : ""}
-      ${det(`preview_${h.to}`, `<span class="meta">Preview ${h.mode === "delta" ? "update" : "full context"} · ${h.text.length} chars</span>`, `<pre>${esc(h.text)}</pre>`)}
+      ${det(`preview_${h.to}`, `<span class="meta">Review request details</span>`, `<pre>${esc(h.text)}</pre>`)}
       ${det(`paste_${h.to}`, `<span class="meta">Paste ${esc(h.to)}'s reply</span>`, `
         <textarea ${keep(`rev_${h.to}`)} style="min-height:110px" placeholder="Paste the full reply. It is stored verbatim. Expected format:&#10;${esc(REPLY_TEMPLATE)}">${draft(`rev_${h.to}`)}</textarea>
         <div class="row"><button onclick="saveReply(this, ${esc(JSON.stringify(h.to))})">Save reply</button></div>`)}
-    </div>`).join("") : `<p class="empty">Add secondary models in Settings to start a review.</p>`) : "";
+    </div>`).join("") : `<p class="empty">A primary agent is enough to start. Add reviewers for other perspectives.</p>`) : "";
 
-  const nextSteps = `<section class="next"><h2>Next</h2>
+  const recommendation = recommendedAction({a, unanswered, newReplies, notesSince, allSettled, finalAlt, pending, waiting, unsettled: points.length - settled});
+  const nextSteps = `<section class="next"><h2>Next step</h2>${recommendation}
     ${jobFailed}
-    <div class="row"><span class="meta">Model for ${primary}'s analysis:</span> ${modelPicker("analyse")}</div>
-    ${!a ? `${cycleStep()}<p class="meta">${primary} will summarise the problem, ask clarifying questions, suggest sub-problems and propose a solution.</p>
-      <button class="primary" onclick="analyse(this)">Analyse with ${primary}</button>` : `
-      ${newReplies.length ? `<div class="step"><button class="${btn("process")}" onclick="analyse(this)">Process ${newReplies.length} new repl${newReplies.length > 1 ? "ies" : "y"} with ${primary}</button>
+    ${setup.configured && setup.standard_codex_analysis ? codexFolderOption(Boolean(jobFailed && job.error?.includes("--skip-git-repo-check"))) : ""}
+    <div class="row">${primarySummary()} <button class="link" onclick="openSettings()">Manage</button></div>${det("analysis-model", "Change model for this run", modelPicker("analyse"))}
+    ${!a ? `${det("automation", "Automatic review rounds", cycleStep())}<p class="meta">${primary} will summarise the problem, ask clarifying questions, suggest sub-problems and propose a solution.</p>
+      <button onclick="analyse(this)">Analyse with ${primary}</button>` : `
+      ${newReplies.length ? `<div class="step"><button class="${btn("process")}" onclick="analyse(this)">Update proposal with ${newReplies.length} repl${newReplies.length > 1 ? "ies" : "y"}</button>
         <span class="meta">from ${[...new Set(newReplies.map(r => esc(r.author)))].join(", ")}</span>
-        ${newReplies.map(r => `<div class="row"><span class="meta">${esc(r.author)}'s reply${metaOf(r).truncated ? " (cut at the size limit)" : ""}</span>
-          ${metaOf(r).parsed ? `<span class="badge approved">${metaOf(r).parsed.points.length} point(s) parsed</span>` : `<button onclick="parseReply(this, ${r.id})">Parse positions</button>`}</div>`).join("")}</div>` : ""}
+        ${det("parse-replies", "Reply parsing details", newReplies.map(r => `<div class="row"><span class="meta">${esc(r.author)}'s reply${metaOf(r).truncated ? " (cut at the size limit)" : ""}</span>
+          ${metaOf(r).parsed ? `<span class="badge approved">${metaOf(r).parsed.points.length} point(s) parsed</span>` : `<button onclick="parseReply(this, ${r.id})">Parse positions</button>`}</div>`).join(""))}</div>` : ""}
       ${questions}
       ${next.startsWith("copy_") ? `<p class="meta">Next: send ${esc(pending.to)} the ${pending.mode === "delta" ? "update" : "full context"} in <button class="link" onclick="setTab('reviewers')">Reviewers</button>.</p>` : ""}
       <div class="row">
-        ${!newReplies.length && !a.questions?.length ? `<button class="${btn("reanalyse")}" onclick="analyse(this)">Re-analyse${notesSince.length ? " with new notes" : ""}</button>` : ""}
+        ${!newReplies.length && !unanswered ? `<button class="${btn("reanalyse")}" onclick="analyse(this)">Re-analyse${notesSince.length ? " with new notes" : ""}</button>` : ""}
         <button class="${btn("final")}" onclick="finalise(this, ${points.length - settled})">${finalAlt ? "Regenerate" : "Generate"} final proposal</button>
       </div>`}
   </section>`;
 
   const reviewersTab = `<section>
-    <div class="step"><h3>Second opinions</h3>${peers}
-      ${det("add_reviewer", `<span class="meta">+ Add reviewer</span>`, `<div class="row">
+    <div class="step"><div class="row"><h3>Second opinions</h3><span style="flex:1"></span><button onclick="openAgent('reviewer')">+ Add reviewer</button></div>${peers}
+      ${det("add_reviewer", `<span class="meta">Add reviewer manually</span>`, `<div class="row">
         <input type="text" ${keep("new_reviewer")} value="${draft("new_reviewer")}" placeholder="Name, e.g. cursor" style="flex:1;min-width:160px">
         <label style="font-weight:normal;margin:0"><input type="checkbox" id="new_reviewer_code"> can open this repository</label>
         <button onclick="addReviewer(this)">Add</button></div>`)}</div>${cycleStep()}</section>`;
@@ -865,7 +876,7 @@ function renderMain() {
     const unapplied = saved !== undefined && notesSince.some(n => n.body.startsWith(`Ruling on [${x.key}]`));
     if (!edit && saved !== undefined) return `<span class="meta">Your decision:</span> ${esc(saved)} <button class="link" onclick="${open}">Change</button>${unapplied ? ` <span class="meta">Saved. Re-analyse to apply it.</span>` : ""}`;
     if (!edit && x.status === "agreed") return `<span class="muted">Models report agreement; you have not ruled on it</span> <button class="link" onclick="${open}">Override</button>`;
-    return `<div class="row"><span class="meta">Your decision:</span>
+    return `${x.status === "decided" ? '<p class="meta">The agent marked this decided, but no point ruling is recorded. You can use a saved answer below without retyping it.</p>' : ""}${savedAnswerRuling(x,a)}<div class="row"><span class="meta">Your decision:</span>
       <button onclick='rule(this, ${esc(JSON.stringify(x))}, ${esc(JSON.stringify(state.settings.primary_name))}, ${esc(JSON.stringify(x.primary))})'>Go with ${primary}</button>
       ${models.filter(m => posOf(x, m)).map(m => `<button onclick='rule(this, ${esc(JSON.stringify(x))}, ${esc(JSON.stringify(m))}, ${esc(JSON.stringify(posOf(x, m)))})'>Go with ${esc(m)}</button>`).join("")}
       <input type="text" ${keep(`rule_${x.key}`)} value="${draft(`rule_${x.key}`)}" placeholder="…or decide yourself" style="flex:1;min-width:160px">
@@ -915,16 +926,14 @@ function renderMain() {
         ${got.map(r => det(`got_${r.id}`, `<span class="meta">Reply from ${esc(r.author)} · ${time(r.created_at)}${metaOf(r).run_id ? " · run by dlg" : ""}</span>`, `${runInfo(metaOf(r))}${usageText(metaOf(r)) ? `<div class="meta">${usageText(metaOf(r))}</div>` : ""}<pre>${esc(r.body)}</pre>`)).join("")}</div>`)).join("")}</section>` : `<p class="empty">No rounds yet.</p>`;
 
   const decision = `<section>
-    ${finalAlt ? `<div class="final">
-      <div class="row"><b>${esc(finalAlt.title)}</b><span class="badge">consensus</span><span style="flex:1"></span>
-        <button onclick="copyText(current.alternatives.find(x => x.id === ${finalAlt.id}).description, 'Copied final proposal')">Copy</button></div>
-      <div class="prose">${esc(finalAlt.description)}</div></div>` : ""}
+    ${approvalChangeNotice(d)}
+    ${finalAlt ? finalProposalCard(finalAlt) : ""}
     ${d.selection ? `<p>Current: <b>${d.selection.alternative_id ? esc(altTitle(d, d.selection.alternative_id)) : "Deferred"}</b> — ${esc(d.selection.rationale)} <span class="meta">${time(d.selection.created_at)}</span></p>` : ""}
     ${det("pick", "Choose a different alternative", `
-      ${d.alternatives.map(x => `<label style="font-weight:normal"><input type="radio" name="pick" value="${x.id}" ${d.selection?.alternative_id === x.id ? "checked" : ""}> ${esc(x.title)} <span class="meta">(${esc(x.author)})</span></label>`).join("") || `<p class="empty">No alternatives yet.</p>`}
-      <div class="row"><input type="text" id="sel_rationale" placeholder="Rationale (required)"></div>
+      ${d.alternatives.map(x => `<label style="font-weight:normal"><input type="radio" name="pick" value="${x.id}" ${Number(drafts.selected_alternative ?? d.selection?.alternative_id) === x.id ? "checked" : ""} onchange="drafts.selected_alternative=this.value;persistDrafts()"> ${esc(x.title)} <span class="meta">(${esc(x.author)})</span></label>`).join("") || `<p class="empty">No alternatives yet.</p>`}
+      <div class="row"><input type="text" ${keep("sel_rationale")} value="${draft("sel_rationale")}" placeholder="Rationale (required)"></div>
       <div class="row"><button onclick="select(this, true)">Select solution</button><button onclick="select(this, false)">Defer problem</button></div>`)}
-    ${d.status === "selected" ? `<div class="row"><input type="text" id="appr_note" placeholder="Approval note (optional)"><button class="primary" onclick="approve(this, ${points.length - settled})">Approve selected solution</button></div>` : ""}
+    ${d.status === "selected" ? `<div class="row"><input type="text" ${keep("appr_note")} value="${draft("appr_note")}" placeholder="Approval note (optional)"><button class="primary" onclick="approve(this, ${points.length - settled})">Approve selected solution</button></div>` : ""}
     ${d.approval ? `<p>Approved ${time(d.approval.created_at)}${d.approval.note ? " — " + esc(d.approval.note) : ""}${d.approval.sent_at ? ` · sent to ${primary} ${time(d.approval.sent_at)}` : ""}</p>` : ""}
     ${["approved", "sent"].includes(d.status) ? `
       ${d.disagreements.some(x => x.status === "open") ? `<p class="badge warn">Open disagreements will be left out of the request.</p>` : ""}
@@ -933,16 +942,17 @@ function renderMain() {
   </section>`;
 
   // Before the first analysis there is nothing to tab between.
-  if (!a) { $("main").innerHTML = `<div id="jobpanel">${jobPanel()}</div>` + problem + nextSteps + renderMore(d, primary); }
+  if (!a) { $("main").innerHTML = `<div id="jobpanel">${jobPanel()}</div>` + problem + (!setup.configured ? `<div class="setup-notice"><div class="row"><span>Connect a primary agent to analyse this problem.</span><button onclick="openAgent('primary')">Set up agent</button></div></div>` : "") + nextSteps + det("ledger-details", "More options", renderMore(d,primary)) + det("diagnostics", "Diagnostics", renderDiagnostics(d)); }
   else {
     const needYou = points.length - settled;
-    const TABS = [["overview", "Overview", ""], ["board", "Board", needYou ? `${needYou} need you` : `${points.length}`], ["reviewers", "Reviewers", handoffs.length],
-      ["history", "History", analyses.length], ["decision", "Decision", d.approval ? "approved" : d.selection ? "selected" : ""], ["cost", "Cost", d.cost?.total.priced ? `$${d.cost.total.cost_usd.toFixed(2)}` : ""], ["more", "More", ""]];
-    const body = { overview: status + nextSteps, board, reviewers: reviewersTab, history,
-      decision: d.alternatives.length || d.selection ? decision : `<p class="empty">No alternatives yet. Generate the final proposal from Overview.</p>`, cost: costTab(d), more: renderMore(d, primary) };
-    $("main").innerHTML = problem + `<div class="strip">${statsStrip({ a, analyses, points, settled, disputed, needYou, notes, need, waiting, newReplies, primary, hasFinal, notesSince, cost: d.cost })}
-      <div class="tabs" role="tablist">${TABS.map(([k, label, n]) => `<button role="tab" aria-selected="${tab === k}" onclick="setTab('${k}')">${label}${n !== "" ? `<span class="meta">${esc(n)}</span>` : ""}</button>`).join("")}</div></div>
-      <div id="jobpanel">${jobPanel()}</div>` + (body[tab] ?? body.overview);
+    const TABS = [["overview", "Overview", ""], ["reviewers", "Reviews", newReplies.length ? `${newReplies.length} new` : handoffs.length],
+      ["decision", "Decisions", needYou ? `${needYou} open` : d.approval ? "approved" : ""], ["history", "Activity", analyses.length]];
+    const overview = `<div class="workspace-grid"><div>${status}${d.cost ? `<p class="status-line">${usageSummary(d.cost.total)} <button class="link" onclick="setTab('history')">Usage details</button></p>` : ""}${nextSteps}<div class="overview-inputs">${savedAnswers()}</div></div>${reviewerSummary(reviews,a,handoffs)}</div>`;
+    const body = { overview, reviewers: reviewersTab, history: renderComparison(analyses) + history + usagePanel(d) + det("ledger-details", "More options", renderMore(d,primary)) + det("diagnostics", "Diagnostics", renderDiagnostics(d)),
+      decision: board + (d.alternatives.length || d.selection ? decision : `<p class="empty">Prepare the final proposal from Overview when you’re ready.</p>`) };
+    $("main").innerHTML = problem + `<div class="strip"><div class="status-line">Round ${analyses.length} · ${settled}/${points.length} points settled · ${newReplies.length} new replies · Updated ${time(a.at)}</div>
+      <div class="tabs" role="tablist" aria-label="Problem workspace" onkeydown="workspaceTabKey(event)">${TABS.map(([k, label, n]) => `<button id="tab-${k}" role="tab" aria-selected="${tab === k}" aria-controls="workspace-panel" tabindex="${tab === k ? 0 : -1}" onclick="setTab('${k}');this.isConnected || $('tab-${k}').focus()">${label}${n !== "" ? `<span class="meta">${esc(n)}</span>` : ""}</button>`).join("")}</div></div>
+      <div id="jobpanel">${jobPanel()}</div>` + `<div id="workspace-panel" role="tabpanel" aria-labelledby="tab-${tab}" tabindex="0">${["reviewers", "history"].includes(tab) && job?.state !== "running" ? `<section class="next"><h2>Next step</h2>${recommendation}</section>` : ""}${body[tab] ?? body.overview}</div>`;
   }
   current.view = { questions: a?.questions ?? [], unsettled: points.length - settled };
   const o = $("jobout"); if (o) o.scrollTop = o.scrollHeight;
@@ -956,12 +966,12 @@ function syncHash() {
   if (location.hash !== h) history.pushState(null, "", h || location.pathname);
 }
 function setTab(t) {
-  tab = t; syncHash(); renderMain();
+  tab = ({board:"decision",cost:"history",more:"history"})[t] || t; syncHash(); renderMain();
   // Keep the strip in view: a shorter tab must not leave the page scrolled past its end.
   const pr = document.querySelector("#main > section.problem");
   if (pr) $("main").scrollTop = Math.min($("main").scrollTop, pr.offsetHeight);
 }
-const hashRoute = () => { const [, id, t] = location.hash.match(/^#(\d+)(?:\/(\w+))?/) ?? []; return { id: Number(id) || null, tab: TAB_NAMES.includes(t) ? t : "overview" }; };
+const hashRoute = () => { const [, id, t] = location.hash.match(/^#(\d+)(?:\/(\w+))?/) ?? []; return { id: Number(id) || null, tab: ({board:"decision",cost:"history",more:"history"})[t] || (TAB_NAMES.includes(t) ? t : "overview") }; };
 window.addEventListener("popstate", () => {
   const r = hashRoute();
   tab = r.tab;
@@ -999,7 +1009,7 @@ function waitChips(s) {
   s.need.forEach(h => out.push(chip("you", `${esc(h.to)} waits on you · send ${h.state === "unsent" ? "full context" : "update"}`, "setTab('reviewers')")));
   s.waiting.forEach(h => out.push(chip("them", `You wait on ${esc(h.to)} · reply pending`, "setTab('reviewers')")));
   if (s.newReplies.length) out.push(chip("you", `${s.primary} waits on you · process ${s.newReplies.length} repl${s.newReplies.length > 1 ? "ies" : "y"}`, "setTab('overview')"));
-  if (s.a.questions?.length) out.push(chip("you", `${s.primary} waits on you · ${s.a.questions.length} question(s)`, "setTab('overview')"));
+  if (s.a.questions?.filter((_,i)=>!questionAnswer(s.a,i)).length) out.push(chip("you", `${s.primary} waits on you · ${s.a.questions.length} question(s)`, "setTab('overview')"));
   if (s.needYou) out.push(chip("you", `${s.needYou} point(s) wait on your decision`, "ui.boardFilter = 'needs'; setTab('board')"));
   return out.join("") || `<span class="meta">Nothing waiting.${!s.points.length ? ""
     : s.notesSince.length ? " Re-analyse to apply your new notes." : s.hasFinal ? " The final proposal is ready; select and approve it under Decision." : " Every point is settled; generate the final proposal."}</span>`;
@@ -1016,6 +1026,17 @@ function statsStrip(s) {
 }
 
 // Cost tab: totals per agent and per model choice, then every run, from the "usage" audit events.
+function usageSummary(u) {
+  const tokens = u.token_runs || u.input_tokens || u.output_tokens
+    ? `${kTok(u.input_tokens ?? 0)} input / ${kTok(u.output_tokens ?? 0)} output tokens${u.token_runs != null && u.token_runs < u.runs ? " (reported runs only)" : ""}`
+    : "Tokens not reported";
+  return `${tokens} · ${mins(u.duration_ms ?? 0)} · ${esc(usd(u))}${u.partial_runs ? " · partial usage" : ""}`;
+}
+function usagePanel(d) {
+  if (!d.cost) return `<section><h3>Usage</h3><p class="meta">No usage recorded for these runs.</p></section>`;
+  const u = d.cost.total;
+  return `<section><h3>Usage</h3><p class="status-line">${usageSummary(u)}</p>${det("usage-details", "Usage details", `<p class="meta">${[u.cache_read_tokens && `${kTok(u.cache_read_tokens)} cached input`, u.reasoning_output_tokens && `${kTok(u.reasoning_output_tokens)} reasoning output`, u.turns && `${u.turns} completed turns`, u.tool_calls && `${u.tool_calls} tool calls`].filter(Boolean).join(" · ")}</p><p class="meta">Codex cache and reasoning counts are included in its input and output totals. Partial runs include only usage received before they stopped. Cost is reported only when supplied by the agent.</p>` + costTab(d))}</section>`;
+}
 function costTab(d) {
   if (!d.cost) return `<p class="empty">No run has reported usage yet. Runs from before cost tracking are not counted.</p>`;
   const rows = lines => lines.map(l => `<tr><td>${esc(l.name)}</td><td>${l.runs}${l.failed ? ` <span class="meta">(${l.failed} failed)</span>` : ""}</td><td>${esc(usd(l))}</td>
@@ -1038,37 +1059,42 @@ const altTitle = (d, id) => d.alternatives.find(a => a.id === id)?.title ?? (id 
 // The ledger's full record, folded away.
 function renderMore(d, primary) {
   const p = d.problem;
-  const raw = d.contributions.filter(c => ["proposal", "final", "implementation", "brief", "evaluation"].includes(c.kind));
   return `<section>
     <h3>Sub-problems</h3>
     ${d.children.length ? `<ul class="tree">${d.children.map(c => `<li><button class="link" onclick="openProblem(${c.id})">${esc(c.title)}</button> <span class="badge ${c.status}">${c.status}</span></li>`).join("")}</ul>` : `<p class="empty">None.</p>`}
-    <div class="row"><input type="text" id="sub_title" placeholder="New sub-problem"><button onclick="newProblem(${p.id}, 'sub_title')">Add</button></div>
+    <div class="row"><input type="text" ${keep("sub_title")} value="${draft("sub_title")}" placeholder="New sub-problem"><button onclick="newProblem(${p.id}, 'sub_title')">Add</button></div>
 
     <h3>Alternatives</h3>
     <div class="alts">${d.alternatives.map(a => `<div class="card ${d.selection?.alternative_id === a.id ? "chosen" : ""}">
-      <div class="row"><input type="text" id="a_title_${a.id}" value="${esc(a.title)}"></div>
+      <div class="row"><input type="text" ${keep(`a_title_${a.id}`)} value="${draft(`a_title_${a.id}`, a.title)}"></div>
       <div class="meta">by ${esc(a.author)} · ${time(a.created_at)}</div>
-      <textarea id="a_desc_${a.id}">${esc(a.description)}</textarea>
+      <textarea ${keep(`a_desc_${a.id}`)}>${draft(`a_desc_${a.id}`, a.description)}</textarea>
       ${a.evidence.map(e => `<div class="meta">“${esc(e.quote)}” — ${esc(e.source || e.author)}</div>`).join("")}
       <div class="row">
-        <button onclick="act(this, () => api('PATCH', '/api/alternatives/${a.id}', {title: val('a_title_${a.id}'), description: $('a_desc_${a.id}').value}))">Save</button>
+        <button onclick="act(this, () => writeFields('PATCH', '/api/alternatives/${a.id}', {title: val('a_title_${a.id}'), description: $('a_desc_${a.id}').value}, 'a_title_${a.id}', 'a_desc_${a.id}'))">Save</button>
         <button onclick="ask('Delete this alternative? Linked evidence and disagreements stay on the problem, unlinked from it.', 'Delete').then(ok => ok && act(this, () => api('DELETE', '/api/alternatives/${a.id}')))">Delete</button>
       </div></div>`).join("") || `<p class="empty">No alternatives yet.</p>`}</div>
-    <div class="row" style="margin-top:10px"><input type="text" id="alt_title" placeholder="Your alternative: title"></div>
-    <div class="row"><textarea id="alt_desc" placeholder="Description"></textarea></div>
-    <div class="row"><button onclick="act(this, () => api('POST', '/api/problems/${p.id}/alternatives', {title: val('alt_title'), description: $('alt_desc').value}))">Add alternative</button></div>
+    <div class="row" style="margin-top:10px"><input type="text" ${keep("alt_title")} value="${draft("alt_title")}" placeholder="Your alternative: title"></div>
+    <div class="row"><textarea ${keep("alt_desc")} placeholder="Description">${draft("alt_desc")}</textarea></div>
+    <div class="row"><button onclick="act(this, () => writeFields('POST', '/api/problems/${p.id}/alternatives', {title: val('alt_title'), description: $('alt_desc').value}, 'alt_title', 'alt_desc'))">Add alternative</button></div>
 
     ${d.disagreements.length ? `<h3>Disagreements <span class="meta">(earlier review format)</span></h3>
     ${d.disagreements.map(x => `<div class="dis ${x.status === "open" ? "" : "closed"}">
       <div><b>${esc(x.summary)}</b> <span class="badge ${x.status === "open" ? "warn" : ""}">${x.status}</span></div>
       <div class="meta">raised by ${esc(x.raised_by)} · re: ${esc(altTitle(d, x.alternative_id))}</div>
-      ${x.status === "open" ? `<div class="row"><input type="text" id="d_note_${x.id}" placeholder="Your reasoning"></div>
+      ${x.status === "open" ? `<div class="row"><input type="text" ${keep(`d_note_${x.id}`)} value="${draft(`d_note_${x.id}`)}" placeholder="Your reasoning"></div>
         <div class="row"><button onclick="resolve(this, ${x.id}, 'accept')">Reviewer is right</button>
           <button onclick="resolve(this, ${x.id}, 'reject')">Keep current position</button>
           <button onclick="resolve(this, ${x.id}, 'defer')">Defer</button></div>`
       : `<div class="meta">You chose: ${esc(x.resolution)}${x.resolution_note ? " — " + esc(x.resolution_note) : ""}</div>`}
     </div>`).join("")}` : ""}
 
+  </section>`;
+}
+
+function renderDiagnostics(d) {
+  const raw = d.contributions.filter(c => ["proposal", "final", "implementation", "brief", "evaluation"].includes(c.kind));
+  return `<section>
     ${raw.length ? `<h3>Raw agent output</h3>${raw.map(c => det(`raw_${c.id}`, `<span class="meta">${esc(c.kind)} · ${esc(c.author)} · ${time(c.created_at)}</span>`, `<pre>${esc(c.body)}</pre>`)).join("")}` : ""}
 
     <h3>Audit trail</h3>
@@ -1079,25 +1105,31 @@ function renderMore(d, primary) {
 function newProblem(parentId, inputId) {
   const title = val(inputId);
   if (!title) return;
-  act(null, async () => { const { id } = await api("POST", "/api/problems", { title, parent_id: parentId }); $(inputId).value = ""; await openProblem(id); });
+  act(null, async () => { const { id } = await api("POST", "/api/problems", { title, parent_id: parentId }); $(inputId).value = ""; delete drafts[inputId]; await openProblem(id); });
 }
 
 function resolve(btn, id, resolution) {
   const body = { resolution, note: val(`d_note_${id}`) };
   if (resolution === "own") body.title = val(`d_own_${id}`);
-  act(btn, () => api("POST", `/api/disagreements/${id}/resolve`, body));
+  act(btn, () => writeFields("POST", `/api/disagreements/${id}/resolve`, body, `d_note_${id}`));
 }
 
 function select(btn, pick) {
   const checked = document.querySelector("input[name=pick]:checked");
   if (pick && !checked) { fieldError(btn, "Pick an alternative first."); return; }
-  act(btn, () => api("POST", `/api/problems/${current.problem.id}/select`,
-    { alternative_id: pick ? Number(checked.value) : null, rationale: val("sel_rationale") }));
+  act(btn, () => writeFields("POST", `/api/problems/${current.problem.id}/select`,
+    { alternative_id: pick ? Number(checked.value) : null, rationale: val("sel_rationale") }, "sel_rationale", "selected_alternative"));
 }
 
 async function implement(btn, ids) {
   const own = ids.length === 1 && current?.problem.id === ids[0] ? current.view.unsettled : 0;
-  if (!await ask(`Ask ${state.settings.primary_name} to implement ${ids.length} approved problem(s)? It will modify files in ${state.settings.workdir}.` +
+  // Refresh every requested problem, including bulk sends, before the existing confirmation.
+  let changed;
+  try {
+    const details = await Promise.all(ids.map(id => api("GET", `/api/problems/${id}`)));
+    changed = details.filter(d => d.approval_change).map(d => `• ${d.problem.title}: implementing approved “${altTitle(d,d.approval_change.approved_alternative_id)}”; a newer final proposal differs.`);
+  } catch (e) { showError(e.message); return; }
+  if (!await ask(`${changed.length ? "Changes since approval:\n" + changed.join("\n") + "\n\n" : ""}Ask ${state.settings.primary_name} to implement ${ids.length} approved problem(s)? It will modify files in ${state.settings.workdir}.` +
       (own ? `\n\n${own} board point(s) have no decision yet; they are left out of the request.` : ""), "Implement")) return;
   act(btn, async () => {
     const { job_id } = await api("POST", "/api/implement", { problem_ids: ids, model: modelChoice("implement") });
@@ -1106,78 +1138,9 @@ async function implement(btn, ids) {
   });
 }
 
-function openSettings() {
-  $("s_primary_name").value = state.settings.primary_name ?? "";
-  $("s_secondary_names").value = (state.settings.secondary_names || []).join(", ");
-  $("s_secondary_with_code").value = (state.settings.secondary_with_code || []).join(", ");
-  renderCommands();
-  $("settings").showModal();
-}
-
-// Agent commands and workdir are set only in a terminal (the server refuses them), so this
-// shows them read-only and offers fixed paste lines; only knownAgents names get a Copy button.
-function renderCommands() {
-  const s = state.settings, agents = state.agents ?? [];
-  const cmd = v => v ? `<code>${esc(v)}</code>` : `<span class="empty">not set</span>`;
-  const reviewers = [...new Set([...(s.secondary_names ?? []), ...Object.keys(s.secondary_commands ?? {})])];
-  const paste = line => `<div class="row"><code>${esc(line)}</code>
-    <button onclick="copyText(${esc(JSON.stringify(line))}, 'Copied. Paste it in a terminal in this project.')">Copy</button></div>`;
-  $("s_commands").innerHTML = `<h3>Agent commands</h3>
-    <p class="meta">dlg runs these on your account, so they can be changed only in a terminal. This page shows them; it cannot set them.</p>
-    <table>
-      <tr><td>Primary (investigate, read-only)</td><td>${cmd(s.primary_command)}</td></tr>
-      <tr><td>Implement (can write files)</td><td>${cmd(s.implement_command)}</td></tr>
-      <tr><td>Working directory</td><td>${cmd(s.workdir)}</td></tr>
-      ${reviewers.map(n => `<tr><td>Reviewer ${esc(n)}</td><td>${s.secondary_commands?.[n]
-        ? `${cmd(s.secondary_commands[n])} · ${runnable(n) ? "approved" : "<b>not approved</b>"}` : `<span class="empty">copy-paste (no runner)</span>`}</td></tr>`).join("")}
-    </table>
-    <details open><summary><b>Wiki: how to add or change agents</b></summary>
-      <p class="meta">Run these in a terminal inside this project (where <code>.decision-ledger/</code> is). dlg prints exactly what it will store and asks <code>Allow? [y/N]</code>.
-        Read the pasted line before you press Enter, then read dlg's echo before you type y.</p>
-      <ul class="meta">
-        <li>The primary investigates read-only, but what it reads is sent to its vendor.</li>
-        <li>The implement command can write files in the working directory.</li>
-        <li>A reviewer runner gets the handoff on stdin; what it reads is sent to its vendor. A y at the prompt approves it, so the Run buttons and auto rounds can start it.</li>
-      </ul>
-      ${agents.map(a => `<h3>${esc(a.name)}</h3>
-        <p class="meta">Primary: <code>${esc(a.primary)}</code> · implement: <code>${esc(a.implement)}</code></p>
-        ${paste(`dlg config use ${a.name}`)}
-        <p class="meta">As a reviewer (runs <code>${esc(a.primary)}</code>):</p>
-        ${paste(`dlg config set-runner ${a.name}`)}`).join("")}
-      <h3>Using different models</h3>
-      <p class="meta"><b>Primary (claude).</b> Add model presets once; then pick model, context and reasoning per run beside
-        "Model for ${esc(s.primary_name)}'s analysis" (Overview) and "Model for implementation" (Decision), and "make default" to keep a choice.</p>
-      ${paste("dlg config init-models claude")}
-      <p class="meta">Or one preset of your own (key, label, context label, then the choices):</p>
-      <pre>dlg config add-model opus-1m "Opus 1M" "1M" --model opus --context 1m --effort high</pre>
-      <p class="meta"><b>Reviewer (cursor).</b> No setup: its card in the Reviewers tab lists <code>cursor-agent --list-models</code> as model,
-        context and reasoning; "make default" is what auto rounds use. In a terminal: <code>dlg run &lt;id&gt; cursor --model &lt;id&gt;</code>.
-        If the runner command already has <code>--model</code>, that model is used and the picker is off.</p>
-      <p class="meta"><b>A second Claude model as a reviewer.</b> Give it its own name (not ${esc(s.primary_name)}), add that name under
-        "Secondary models" above, then set and approve its runner:</p>
-      <pre>dlg config set-runner sonnet 'claude -p --model sonnet'</pre>
-      <p class="meta">A model from another vendor (through cursor) is a more independent check than a second Claude model.
-        The Cost tab shows each run's selected model next to the one the agent reports it used.</p>
-      <h3>Other agents (type these yourself)</h3>
-      <pre>dlg config set-primary &lt;name&gt; '&lt;command&gt;' ['&lt;implement-command&gt;']
-dlg config set-runner &lt;agent&gt; '&lt;command&gt;'
-dlg config set-workdir &lt;dir&gt;</pre>
-      <p class="meta">Quote each command so it is one word. In a script (no terminal), use, set-primary and set-workdir need --yes right after the subcommand; set-runner stores the command unapproved. A --yes anywhere else becomes part of the command, and the echo shows it.</p>
-    </details>`;
-}
-
-// Commands change in the terminal, so re-read them when the user comes back to this tab.
-const refreshSettings = () => { if ($("settings").open) refresh().then(renderCommands, e => showError(e.message)); };
+const refreshSettings = () => { if (document.visibilityState === "visible") refresh().then(async () => { await loadReviewerModels(false); if ($("settings").open) renderAgentSettings(); }).catch(e => showError(e.message)); };
 window.addEventListener("focus", refreshSettings);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshSettings(); });
-
-function saveSettings() {
-  const body = { primary_name: val("s_primary_name") };   // commands and workdir are CLI-only; the server refuses them
-  const names = id => [...new Set(val(id).split(",").map(s => s.trim()).filter(Boolean))];
-  body.secondary_names = names("s_secondary_names");
-  body.secondary_with_code = names("s_secondary_with_code");
-  act(null, async () => { await api("PUT", "/api/settings", body); $("settings").close(); });
-}
 
 async function importFile(input) {
   const file = input.files[0];
@@ -1185,16 +1148,19 @@ async function importFile(input) {
   act(null, async () => { await api("POST", "/api/import", JSON.parse(await file.text())); input.value = ""; });
 }
 
-(async () => {
+async function startApp() {
   applyLayout();
-  loadModels(false).then(() => current && renderMain());   // a slow list command must not delay the page
+
   await refresh();
   loadReviewerModels(false).then(() => current && renderMain());
   const r = hashRoute(), exists = id => id && state.problems.some(p => p.id === id);
   tab = r.tab;
   const id = exists(r.id) ? r.id : state.settings.last_problem_id;
   if (exists(id)) await openProblem(id);
-})();
+}
 </script>
+<script src="/vendor/markdown-it.min.js"></script>
+<script src="/workspace.js"></script>
+<script>startApp().catch(e => showError(e.message));</script>
 </body>
 </html>

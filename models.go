@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ const (
 )
 
 type ModelPreset struct {
+	Agent        string `json:"agent,omitempty"` // empty for legacy custom presets
 	Key          string `json:"key"`
 	Label        string `json:"label"`
 	ContextLabel string `json:"context_label"` // display only
@@ -91,7 +93,14 @@ func runModelList(command, cwd string) ([]ModelPreset, error) {
 // availableModels merges the configured presets with the list command's output (cached for
 // modelCacheTTL; stale entries are served when a refresh fails). Presets win on equal keys.
 func availableModels(cfg Settings, refresh bool) (list []ModelPreset, errMsg string) {
-	list = append(list, cfg.Models...)
+	list, errMsg, _ = commandPresets(cfg, cfg.PrimaryCommand, refresh)
+	if listingAgent(cfg.PrimaryCommand) {
+		views, msg, _ := choiceViews(cfg, cfg.PrimaryCommand, refresh)
+		for _, v := range views {
+			list = append(list, ModelPreset{Key: v.Key, Label: v.Label, Args: "--model " + v.Key})
+		}
+		return list, msg
+	}
 	if cfg.ModelListCommand == "" {
 		return list, ""
 	}
@@ -103,9 +112,9 @@ func availableModels(cfg Settings, refresh bool) (list []ModelPreset, errMsg str
 		case err == nil:
 			modelCache.at, modelCache.cmd, modelCache.list = time.Now(), cfg.ModelListCommand, fresh
 		case modelCache.cmd == cfg.ModelListCommand:
-			errMsg = err.Error() + " (showing the last list)"
+			errMsg = strings.TrimSpace(errMsg + " " + err.Error() + " (showing the last list)")
 		default:
-			errMsg = err.Error()
+			errMsg = strings.TrimSpace(errMsg + " " + err.Error())
 		}
 	}
 	if modelCache.cmd == cfg.ModelListCommand {
@@ -126,6 +135,11 @@ func availableModels(cfg Settings, refresh bool) (list []ModelPreset, errMsg str
 // preset; noModel means the base command.
 func resolveModel(cfg Settings, key string, implement bool) (command string, preset *ModelPreset, err error) {
 	command = cfg.PrimaryCommand
+	plainFolder := !implement && cfg.CodexPlainFolder != "" && standardCodexAnalysis(command) &&
+		resolvedWorkdir(cfg.Workdir) == cfg.CodexPlainFolder
+	if plainFolder {
+		command = strings.TrimSpace(command) + " --skip-git-repo-check --sandbox read-only"
+	}
 	if implement {
 		command = cfg.ImplementCommand
 	}
@@ -138,18 +152,52 @@ func resolveModel(cfg Settings, key string, implement bool) (command string, pre
 	if key == "" || key == noModel {
 		return command, nil, nil
 	}
-	list, _ := availableModels(cfg, false)
+	list := presetsFor(cfg, toolOf(cfg.PrimaryCommand))
+	if !slices.ContainsFunc(list, func(preset ModelPreset) bool { return preset.Key == key }) {
+		list, _ = availableModels(cfg, false)
+	}
 	for _, m := range list {
 		if m.Key == key {
-			args, err := renderArgs(agentOf(command), m)
+			args, err := renderArgs(toolOf(command), m)
 			if err != nil {
 				return "", nil, ledgerErr("model %q: %v", key, err)
 			}
-			if _, err := splitCommand(args); err != nil {
+			words, err := splitCommand(args)
+			if err != nil {
 				return "", nil, ledgerErr("model %q has invalid arguments: %v", key, err)
+			}
+			if plainFolder {
+				if err := checkPlainFolderPreset(words); err != nil {
+					return "", nil, err
+				}
 			}
 			return strings.TrimSpace(command + " " + args), &m, nil
 		}
 	}
 	return "", nil, ledgerErr("unknown model %q; add it with `dlg config add-model`", key)
+}
+
+// Built-in choices require no setup command and never invoke a model. Persisted
+// custom presets retain precedence; tool-specific presets cannot leak across tools.
+func presetsFor(cfg Settings, agent string) []ModelPreset {
+	out := []ModelPreset{}
+	have := map[string]bool{}
+	for _, m := range cfg.Models {
+		if m.Agent == "" || m.Agent == agent {
+			out = append(out, m)
+			have[m.Key] = true
+		}
+	}
+	for model, caps := range knownCaps[agent] {
+		for _, context := range caps.Contexts {
+			for _, effort := range caps.Efforts {
+				m := ModelPreset{Agent: agent, Key: model + "-" + context + "-" + effort, Label: model, Model: model, Context: context, Effort: effort}
+				if _, err := renderArgs(agent, m); err == nil && !have[m.Key] {
+					out = append(out, m)
+				}
+			}
+		}
+	}
+	slices.SortStableFunc(out, func(a, b ModelPreset) int { return strings.Compare(a.Key, b.Key) })
+	return out
 }

@@ -50,7 +50,7 @@ func runnerModel(command string) string {
 		if v, ok := strings.CutPrefix(a, "--model="); ok {
 			return v
 		}
-		if a == "--model" && i+1 < len(args) {
+		if (a == "--model" || a == "-m") && i+1 < len(args) {
 			return args[i+1]
 		}
 	}
@@ -87,34 +87,34 @@ func execRunner(parent context.Context, command, input, cwd string, timeout time
 	cmd.Stdout, cmd.Stderr = io.MultiWriter(stdout, progress), io.MultiWriter(stderr, progress)
 	var stream *streamReader
 	if isStreamJSON(args) { // keep the events out of the reply; show them as readable progress
-		stream = &streamReader{progress: progress}
+		stream = &streamReader{progress: progress, codex: codexExec(args)}
 		cmd.Stdout = stream
 	}
 	start := time.Now()
 	err = cmd.Run()
-	if stream != nil {
-		stream.flush()
-	}
 	res := &runResult{duration: time.Since(start), truncated: stdout.truncated}
+	if stream != nil {
+		res.usage = stream.finish(res.duration, err != nil)
+	}
 	switch {
 	case parent.Err() != nil:
-		return nil, AgentError("runner stopped")
+		return res, AgentError("runner stopped")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return nil, AgentError(fmt.Sprintf("runner timed out after %s", timeout))
+		return res, AgentError(fmt.Sprintf("runner timed out after %s", timeout))
 	case errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist):
-		return nil, AgentError("command not found: " + args[0])
+		return res, AgentError("command not found: " + args[0])
 	case err != nil:
 		msg := strings.TrimSpace(stderr.buf.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, AgentError(msg)
+		return res, AgentError(msg)
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	res.stdout = strings.ToValidUTF8(stdout.buf.String(), "")
 	if stream != nil {
-		if stream.result == nil || stream.failed { // a failed result still cost something: keep its usage
-			return &runResult{usage: stream.usage}, AgentError("the runner ended without a result event; nothing was stored")
+		if stream.result == nil || stream.failed || stream.codex && !stream.completed { // a failed result still cost something: keep its usage
+			return res, AgentError("the runner ended without a result event; nothing was stored")
 		}
 		res.usage = stream.usage
 		r := *stream.result
@@ -122,7 +122,7 @@ func execRunner(parent context.Context, command, input, cwd string, timeout time
 		res.stdout = strings.ToValidUTF8(r[:min(len(r), runMaxBytes)], "")
 	}
 	if strings.TrimSpace(res.stdout) == "" {
-		return nil, AgentError("the runner produced no output; nothing was stored")
+		return res, AgentError("the runner produced no output; nothing was stored")
 	}
 	return res, nil
 }
@@ -216,7 +216,7 @@ func runSecondary(ctx context.Context, l *Ledger, core Core, cfg Settings, pid i
 		return nil, nil, ledgerErr("no runner for %q", agent)
 	}
 	list, _ := listRunnerModels(cfg, agent, false)
-	command, _, err := reviewerCommand(cfg, agent, model, list)
+	command, selectedModel, err := reviewerCommand(cfg, agent, model, list)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -251,7 +251,7 @@ func runSecondary(ctx context.Context, l *Ledger, core Core, cfg Settings, pid i
 	id := make([]byte, 8)
 	rand.Read(id)
 	meta := D{"run_id": hex.EncodeToString(id), "command": command, "exit_code": res.exitCode,
-		"duration_ms": res.duration.Milliseconds(), "truncated": res.truncated}
+		"duration_ms": res.duration.Milliseconds(), "truncated": res.truncated, "agent": agent, "tool": toolOf(command), "model": selectedModel}
 	if res.usage != nil {
 		meta["usage"] = res.usage
 	}

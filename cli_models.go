@@ -55,7 +55,7 @@ func versionDrift(cfg Settings, list []ModelPreset) []string {
 			continue
 		}
 		if !seen {
-			installed, seen = cliVersion(agentOf(cfg.PrimaryCommand)), true
+			installed, seen = cliVersion(toolOf(cfg.PrimaryCommand)), true
 		}
 		if installed != "" && installed != m.CLIVersion {
 			out = append(out, fmt.Sprintf("preset %q was set up for CLI version %q, installed is %q; re-check its flags", m.Key, m.CLIVersion, installed))
@@ -155,7 +155,7 @@ func cmdSetDefaultModel(l *Ledger, cfg Settings, args []string) error {
 }
 
 func cmdInitModels(l *Ledger, cfg Settings, args []string) error {
-	agent := agentOf(cfg.PrimaryCommand)
+	agent := toolOf(cfg.PrimaryCommand)
 	if len(args) == 1 {
 		agent = args[0]
 	} else if len(args) > 1 {

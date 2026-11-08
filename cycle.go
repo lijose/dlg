@@ -35,6 +35,10 @@ func (s *server) cycleRun(pid int64, rounds int, o runOpts) (any, error) {
 	}
 	for round := 1; round <= rounds; round++ {
 		cfg, err := s.l.settings()
+		if o.cfg != nil {
+			cfg = *o.cfg
+			err = nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -89,8 +93,8 @@ func (s *server) cycleShouldStop(pid int64) (bool, string, error) {
 	switch {
 	case err != nil:
 		return true, "", err
-	case len(a.Questions) > 0:
-		return true, fmt.Sprintf("paused: the primary has %d question(s) for you", len(a.Questions)), nil
+	case unansweredQuestions(d) > 0:
+		return true, fmt.Sprintf("paused: the primary has %d question(s) for you", unansweredQuestions(d)), nil
 	case st.Points > 0 && st.Settled == st.Points:
 		return true, "stopped: every point is settled", nil
 	case st.Points > 0 && !slices.ContainsFunc(a.Points, func(p PointOut) bool { return needsReview(p, ruled) }):

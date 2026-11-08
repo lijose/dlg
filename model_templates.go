@@ -181,7 +181,7 @@ func seedPresets(agent, version string) (seeded []ModelPreset, refused []string)
 		c := knownCaps[agent][name]
 		effort := c.Efforts[len(c.Efforts)-1]
 		for _, ctx := range c.Contexts {
-			m := ModelPreset{Key: name + "-" + ctx + "-" + effort, Label: name, ContextLabel: ctx,
+			m := ModelPreset{Agent: agent, Key: name + "-" + ctx + "-" + effort, Label: name, ContextLabel: ctx,
 				Model: name, Context: ctx, Effort: effort, CLIVersion: version}
 			if _, err := renderArgs(agent, m); err != nil {
 				refused = append(refused, m.Key+": "+err.Error())

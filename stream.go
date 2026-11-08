@@ -1,6 +1,5 @@
-// Readable progress for agents that print stream-json events (cursor-agent, claude -p):
-// thinking, tool calls and answer text go to the job panel as they arrive; only the final
-// "result" text is kept as the output.
+// Readable progress and usage for Claude/Cursor stream-json and Codex JSONL.
+// Only the final answer is returned to the ledger parser.
 package main
 
 import (
@@ -12,11 +11,23 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // withStreaming adds stream-json flags to known agents in print mode that do not choose an
 // output format themselves, so the UI shows progress without the user editing commands.
 func withStreaming(args []string) []string {
+	if codexExec(args) {
+		if codexJSON(args) {
+			return args
+		}
+		out := slices.Clone(args)
+		i := slices.Index(out, "--")
+		if i < 0 {
+			i = len(out)
+		}
+		return slices.Insert(out, i, "--json")
+	}
 	if len(args) == 0 || !slices.ContainsFunc(args, func(a string) bool { return a == "-p" || a == "--print" }) ||
 		slices.ContainsFunc(args, func(a string) bool { return a == "--output-format" || strings.HasPrefix(a, "--output-format=") }) {
 		return args
@@ -31,8 +42,22 @@ func withStreaming(args []string) []string {
 }
 
 func isStreamJSON(args []string) bool {
+	if codexJSON(args) {
+		return true
+	}
 	i := slices.Index(args, "--output-format")
 	return slices.Contains(args, "--output-format=stream-json") || i >= 0 && i+1 < len(args) && args[i+1] == "stream-json"
+}
+
+func codexExec(args []string) bool {
+	return len(args) > 1 && strings.TrimSuffix(strings.ToLower(filepath.Base(args[0])), ".exe") == "codex" && (args[1] == "exec" || args[1] == "e")
+}
+
+func codexJSON(args []string) bool {
+	if i := slices.Index(args, "--"); i >= 0 {
+		args = args[:i]
+	}
+	return codexExec(args) && slices.Contains(args, "--json")
 }
 
 type streamEvent struct {
@@ -60,16 +85,20 @@ type streamEvent struct {
 // Usage is what an agent's result event says about the run. Claude Code reports cost, tokens,
 // turns and models; cursor-agent reports less. Missing fields stay empty: nothing is estimated.
 type Usage struct {
-	CostUSD      *float64 `json:"cost_usd,omitempty"` // nil: the agent reports no cost
-	InputTokens  int64    `json:"input_tokens,omitempty"`
-	OutputTokens int64    `json:"output_tokens,omitempty"`
-	CacheRead    int64    `json:"cache_read_tokens,omitempty"`
-	CacheWrite   int64    `json:"cache_write_tokens,omitempty"`
-	DurationMS   int64    `json:"duration_ms,omitempty"`
-	APIMS        int64    `json:"api_ms,omitempty"`
-	Turns        int64    `json:"turns,omitempty"`
-	Models       []string `json:"models,omitempty"`
-	SessionID    string   `json:"session_id,omitempty"`
+	CostUSD         *float64 `json:"cost_usd,omitempty"` // nil: the agent reports no cost
+	InputTokens     int64    `json:"input_tokens,omitempty"`
+	OutputTokens    int64    `json:"output_tokens,omitempty"`
+	CacheRead       int64    `json:"cache_read_tokens,omitempty"`
+	CacheWrite      int64    `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens int64    `json:"reasoning_output_tokens,omitempty"`
+	ToolCalls       int64    `json:"tool_calls,omitempty"`
+	TokensReported  bool     `json:"tokens_reported,omitempty"`
+	Partial         bool     `json:"partial,omitempty"` // run stopped before its final turn completed
+	DurationMS      int64    `json:"duration_ms,omitempty"`
+	APIMS           int64    `json:"api_ms,omitempty"`
+	Turns           int64    `json:"turns,omitempty"`
+	Models          []string `json:"models,omitempty"`
+	SessionID       string   `json:"session_id,omitempty"`
 }
 
 // parseUsage reads a result event; agents differ in naming (snake_case vs camelCase).
@@ -89,14 +118,18 @@ func parseUsage(b []byte) *Usage {
 	}
 	i := func(m map[string]any, keys ...string) int64 { v, _ := num(m, keys...); return int64(v) }
 	u := &Usage{
-		InputTokens:  i(tokens, "input_tokens", "inputTokens"),
-		OutputTokens: i(tokens, "output_tokens", "outputTokens"),
-		CacheRead:    i(tokens, "cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"),
-		CacheWrite:   i(tokens, "cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"),
-		DurationMS:   i(e, "duration_ms", "durationMs"),
-		APIMS:        i(e, "duration_api_ms", "durationApiMs"),
-		Turns:        i(e, "num_turns", "numTurns"),
+		InputTokens:     i(tokens, "input_tokens", "inputTokens"),
+		OutputTokens:    i(tokens, "output_tokens", "outputTokens"),
+		CacheRead:       i(tokens, "cached_input_tokens", "cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"),
+		ReasoningTokens: i(tokens, "reasoning_output_tokens"),
+		CacheWrite:      i(tokens, "cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"),
+		DurationMS:      i(e, "duration_ms", "durationMs"),
+		APIMS:           i(e, "duration_api_ms", "durationApiMs"),
+		Turns:           i(e, "num_turns", "numTurns"),
 	}
+	_, inputReported := num(tokens, "input_tokens", "inputTokens")
+	_, outputReported := num(tokens, "output_tokens", "outputTokens")
+	u.TokensReported = inputReported || outputReported
 	if c, ok := num(e, "total_cost_usd", "cost_usd", "costUSD", "totalCostUsd"); ok {
 		u.CostUSD = &c
 	}
@@ -121,13 +154,16 @@ func (u *Usage) meta() D {
 
 // streamReader turns stream-json lines into progress text and remembers the result.
 type streamReader struct {
-	progress io.Writer
-	line     []byte
-	seg      string // text shown since the last tool or thinking; a full message repeating it is skipped
-	thinking bool
-	result   *string
-	failed   bool
-	usage    *Usage
+	progress  io.Writer
+	line      []byte
+	seg       string // text shown since the last tool or thinking; a full message repeating it is skipped
+	thinking  bool
+	result    *string
+	failed    bool
+	usage     *Usage
+	codex     bool
+	completed bool
+	tools     map[string]bool
 }
 
 func (s *streamReader) Write(p []byte) (int, error) {
@@ -151,6 +187,10 @@ func (s *streamReader) flush() {
 }
 
 func (s *streamReader) event(b []byte) {
+	if s.codex {
+		s.codexEvent(b)
+		return
+	}
 	var e streamEvent
 	if json.Unmarshal(b, &e) != nil {
 		s.progress.Write(append(b, '\n')) // not an event: show it as is
@@ -183,6 +223,74 @@ func (s *streamReader) event(b []byte) {
 		s.result, s.failed, s.usage = &e.Result, e.IsError, parseUsage(b)
 		fmt.Fprint(s.progress, "\n")
 	}
+}
+
+// Codex reports usage per completed turn. Cache reads are a subset of input
+// tokens, and reasoning tokens are a subset of output; never add them twice.
+func (s *streamReader) codexEvent(b []byte) {
+	var e struct {
+		Type     string `json:"type"`
+		ThreadID string `json:"thread_id"`
+		Item     struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Command string `json:"command"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(b, &e) != nil {
+		return
+	}
+	if s.usage == nil {
+		s.usage = &Usage{}
+	}
+	switch e.Type {
+	case "thread.started":
+		s.usage.SessionID = e.ThreadID
+	case "turn.started":
+		s.completed, s.result = false, nil
+	case "turn.completed":
+		if s.completed {
+			return
+		}
+		u := parseUsage(b)
+		s.usage.TokensReported = s.usage.TokensReported || u.TokensReported
+		s.usage.InputTokens += u.InputTokens
+		s.usage.OutputTokens += u.OutputTokens
+		s.usage.CacheRead += u.CacheRead
+		s.usage.ReasoningTokens += u.ReasoningTokens
+		s.usage.Turns++
+		s.completed = true
+	case "turn.failed":
+		s.failed = true
+	case "item.started", "item.completed":
+		switch e.Item.Type {
+		case "agent_message":
+			if e.Type == "item.completed" {
+				text := e.Item.Text
+				s.result = &text
+				s.text(text)
+			}
+		case "command_execution", "mcp_tool_call", "web_search", "file_change":
+			if s.tools == nil {
+				s.tools = map[string]bool{}
+			}
+			if e.Item.ID != "" && !s.tools[e.Item.ID] {
+				s.tools[e.Item.ID] = true
+				s.usage.ToolCalls++
+				s.tool(orDefault(e.Item.Command, e.Item.Type))
+			}
+		}
+	}
+}
+
+func (s *streamReader) finish(elapsed time.Duration, failed bool) *Usage {
+	s.flush()
+	if s.codex && s.usage != nil {
+		s.usage.DurationMS = elapsed.Milliseconds()
+		s.usage.Partial = failed || s.failed || !s.completed
+	}
+	return s.usage
 }
 
 func (s *streamReader) text(t string) {

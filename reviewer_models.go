@@ -63,7 +63,8 @@ var runnerModelCache struct {
 func listRunnerModels(cfg Settings, agent string, refresh bool) ([]modelView, string) {
 	command := cfg.SecondaryCommands[agent]
 	if !listingAgent(command) {
-		return nil, ""
+		list, msg, _ := choiceViews(cfg, command, refresh)
+		return list, msg
 	}
 	args, _ := splitCommand(command)
 	bin := args[0]
@@ -110,12 +111,23 @@ func reviewerCommand(cfg Settings, agent, model string, list []modelView) (strin
 	if model == "" || model == noModel {
 		return command, "", nil
 	}
-	if !listingAgent(command) {
-		return "", "", ledgerErr("%s's runner cannot pick a model; set it in the command with dlg config set-runner", agent)
-	}
 	if fixed := runnerModel(command); fixed != "default" {
 		return "", "", ledgerErr("%s's runner command already sets --model %s", agent, fixed)
 	}
+	if !listingAgent(command) {
+		presets, _, _ := commandPresets(cfg, command, false)
+		for _, preset := range presets {
+			if preset.Key == model {
+				args, err := renderArgs(toolOf(command), preset)
+				if err != nil {
+					return "", "", err
+				}
+				return strings.TrimSpace(command + " " + args), presetText(&preset), nil
+			}
+		}
+		return "", "", ledgerErr("%s's runner cannot pick a model with that preset; configure custom models in the terminal", agent)
+	}
+
 	known := slices.ContainsFunc(list, func(m modelView) bool { return m.Key == model })
 	if !known && !(len(list) == 0 && model == saved && reviewerModelRe.MatchString(model)) {
 		return "", "", ledgerErr("%q is not one of %s's models", model, agent)

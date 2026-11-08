@@ -100,7 +100,7 @@ func localOnly(next http.Handler) http.Handler {
 			return
 		}
 		// GET /api/models and /api/runners/{agent}/models run list commands, so they are guarded like a write.
-		if (r.Method != http.MethodGet || strings.HasSuffix(r.URL.Path, "/models")) && r.Header.Get("X-Ledger") != "1" {
+		if (r.Method != http.MethodGet || strings.HasSuffix(r.URL.Path, "/models") || r.URL.Path == "/api/agent-models" || r.URL.Path == "/api/updates") && r.Header.Get("X-Ledger") != "1" {
 			writeJSON(w, http.StatusForbidden, D{"detail": "missing X-Ledger header"})
 			return
 		}
@@ -182,6 +182,23 @@ func okOf(err error) (any, error) {
 func newServer(l *Ledger) http.Handler {
 	s := &server{l}
 	mux := http.NewServeMux()
+	s.setupRoutes(mux)
+	s.answerRoutes(mux)
+	s.updateRoutes(mux)
+	for _, name := range []string{"workspace.js", "workspace.css", "vendor/markdown-it.min.js", "vendor/markdown-it.LICENSE.txt"} {
+		name := name
+		mux.HandleFunc("GET /"+name, func(w http.ResponseWriter, r *http.Request) {
+			data, _ := static.ReadFile("static/" + name)
+			if strings.HasSuffix(name, ".js") {
+				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			} else if strings.HasSuffix(name, ".css") {
+				w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			} else {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			}
+			w.Write(data)
+		})
+	}
 	index, _ := static.ReadFile("static/index.html")
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -206,7 +223,7 @@ func newServer(l *Ledger) http.Handler {
 			if err != nil {
 				return nil, err
 			}
-			p["needs_you"] = len(st.ToSend) > 0 || st.NewReplies > 0 || st.Settled < st.Points
+			p["needs_you"] = len(st.ToSend) > 0 || st.NewReplies > 0 || st.Settled < st.Points || st.UnansweredQuestions > 0
 		}
 		// The Settings tab offers paste lines only for these names.
 		agents := []D{}
@@ -267,6 +284,13 @@ func newServer(l *Ledger) http.Handler {
 	}))
 
 	mux.HandleFunc("POST /api/problems/{pid}/analyse", withID("pid", func(pid int64, b runIn) (any, error) {
+		info, err := setupInfo(l)
+		if err != nil {
+			return nil, err
+		}
+		if info["configured"] != true {
+			return nil, ledgerErr("connect a primary agent from Agents before starting analysis")
+		}
 		cfg, err := l.settings()
 		if err != nil {
 			return nil, err
@@ -278,7 +302,7 @@ func newServer(l *Ledger) http.Handler {
 			return nil, err
 		}
 		j, err := jobs.start("analyse", []int64{pid}, b.Model, cfg.Workdir, func(ctx context.Context, out io.Writer) (any, error) {
-			return s.analyseRun(pid, runOpts{ctx, out, b.Model})
+			return s.analyseRun(pid, runOpts{ctx: ctx, out: out, model: b.Model, cfg: &cfg})
 		})
 		if err != nil {
 			return nil, err
@@ -303,7 +327,7 @@ func newServer(l *Ledger) http.Handler {
 			return nil, err
 		}
 		j, err := jobs.start("cycle", []int64{pid}, b.Model, cfg.Workdir, func(ctx context.Context, out io.Writer) (any, error) {
-			return s.cycleRun(pid, b.Rounds, runOpts{ctx, out, b.Model})
+			return s.cycleRun(pid, b.Rounds, runOpts{ctx: ctx, out: out, model: b.Model, cfg: &cfg})
 		})
 		if err != nil {
 			return nil, err
@@ -365,6 +389,9 @@ func newServer(l *Ledger) http.Handler {
 			return nil, err
 		}
 		agent := r.PathValue("agent")
+		if !runnable(cfg, agent) {
+			return D{"models": []modelView{}, "error": "Approve the reviewer runner in your project terminal first.", "fixed": ""}, nil
+		}
 		list, errMsg := listRunnerModels(cfg, agent, r.URL.Query().Get("refresh") == "1")
 		if list == nil {
 			list = []modelView{}
@@ -435,7 +462,7 @@ func newServer(l *Ledger) http.Handler {
 			return nil, err
 		}
 		j, err := jobs.start("finalise", []int64{pid}, b.Model, cfg.Workdir, func(ctx context.Context, out io.Writer) (any, error) {
-			return s.finaliseRun(pid, runOpts{ctx, out, b.Model})
+			return s.finaliseRun(pid, runOpts{ctx: ctx, out: out, model: b.Model, cfg: &cfg})
 		})
 		if err != nil {
 			return nil, err
@@ -486,7 +513,7 @@ func newServer(l *Ledger) http.Handler {
 			return nil, err
 		}
 		j, err := jobs.start("implement", b.ProblemIDs, b.Model, cfg.Workdir, func(ctx context.Context, out io.Writer) (any, error) {
-			return s.implementRun(b.ProblemIDs, payloads, runOpts{ctx, out, b.Model})
+			return s.implementRun(b.ProblemIDs, payloads, runOpts{ctx: ctx, out: out, model: b.Model, cfg: &cfg})
 		})
 		if err != nil {
 			return nil, err
@@ -520,6 +547,7 @@ func newServer(l *Ledger) http.Handler {
 // runOpts is how one run differs from the default: cancellable, observable, on a preset.
 // The zero value runs blocking with the stage's default model.
 type runOpts struct {
+	cfg   *Settings // immutable configuration captured when the user starts the job
 	ctx   context.Context
 	out   io.Writer
 	model string // preset key; "" = the stage default
@@ -529,6 +557,10 @@ type runOpts struct {
 // the output (usage, preset); with a problem, the usage is also audited, failed runs included.
 func (s *server) runPrimary(problemID any, op, prompt string, implement bool, o runOpts) (string, D, error) {
 	cfg, err := s.l.settings()
+	if o.cfg != nil {
+		cfg = *o.cfg
+		err = nil
+	}
 	if err != nil {
 		return "", nil, err
 	}
@@ -548,6 +580,13 @@ func (s *server) runPrimary(problemID any, op, prompt string, implement bool, o 
 	}
 	out, usage, err := runAgentCtx(o.ctx, command, prompt, cfg.Workdir, o.out)
 	meta := usageMeta(usage, op, presetText(preset), err != nil)
+	if meta == nil {
+		meta = D{}
+	}
+	meta["agent"] = cfg.PrimaryName
+	meta["tool"] = toolOf(command)
+	meta["model"] = presetText(preset)
+	meta["command"] = command
 	addJobUsage(o.ctx, usage, err != nil)
 	if usage != nil && problemID != nil {
 		if recErr := s.l.record(cfg.PrimaryName, "usage", problemID, meta); recErr != nil {
@@ -777,6 +816,10 @@ func (s *server) analyse(pid int64) (any, error) { return s.analyseRun(pid, runO
 
 func (s *server) analyseRun(pid int64, o runOpts) (any, error) {
 	cfg, err := s.l.settings()
+	if o.cfg != nil {
+		cfg = *o.cfg
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +857,10 @@ func (s *server) analyseRun(pid int64, o runOpts) (any, error) {
 // alone: the proposal is only added, so the approval does not go stale behind the user's back.
 func (s *server) finaliseRun(pid int64, o runOpts) (any, error) {
 	cfg, err := s.l.settings()
+	if o.cfg != nil {
+		cfg = *o.cfg
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -886,11 +933,15 @@ func (s *server) implement(problemIDs []int64) (any, error) {
 func (s *server) implementRun(problemIDs []int64, payloads []*Payload, o runOpts) (any, error) {
 	output, meta, err := s.runPrimary(nil, "implement", implementPrompt(payloads), true, o)
 	cfg, cerr := s.l.settings()
+	if o.cfg != nil {
+		cfg = *o.cfg
+		cerr = nil
+	}
 	if cerr != nil {
 		return nil, cerr
 	}
 	// One run serves every problem in it: each gets an equal share of its usage.
-	if meta != nil {
+	if meta != nil && meta["usage"] != nil {
 		meta["shared"] = len(problemIDs)
 		for _, pid := range problemIDs {
 			if err := s.l.record(cfg.PrimaryName, "usage", pid, meta); err != nil {

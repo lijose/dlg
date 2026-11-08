@@ -144,7 +144,7 @@ func runAgent(command, prompt, cwd string) (string, error) {
 
 // runAgentCtx is runAgent that can be cancelled through parent and mirrors stdout and
 // stderr to live (a mutex-guarded tailBuffer) while the agent runs. Usage is nil unless the
-// agent prints stream-json with a result event.
+// agent emits supported stream-json or Codex JSONL events.
 func runAgentCtx(parent context.Context, command, prompt, cwd string, live io.Writer) (string, *Usage, error) {
 	args, err := splitCommand(command)
 	if err != nil {
@@ -174,20 +174,22 @@ func runAgentCtx(parent context.Context, command, prompt, cwd string, live io.Wr
 	}
 	var stream *streamReader
 	if isStreamJSON(args) { // show the events as readable progress; the result text is the output
-		stream = &streamReader{progress: live}
+		stream = &streamReader{progress: live, codex: codexExec(args)}
 		cmd.Stdout = io.MultiWriter(&stdout, stream)
 	}
+	start := time.Now()
 	err = cmd.Run()
+	var usage *Usage
 	if stream != nil {
-		stream.flush()
+		usage = stream.finish(time.Since(start), err != nil)
 	}
 	switch {
 	case errors.Is(parent.Err(), context.Canceled):
-		return "", nil, AgentError("cancelled")
+		return "", usage, AgentError("cancelled")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return "", nil, AgentError(fmt.Sprintf("agent timed out after %ds", int(agentTimeout.Seconds())))
+		return "", usage, AgentError(fmt.Sprintf("agent timed out after %ds", int(agentTimeout.Seconds())))
 	case errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist):
-		return "", nil, AgentError("command not found: " + args[0])
+		return "", usage, AgentError("command not found: " + args[0])
 	case err != nil:
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
@@ -199,10 +201,10 @@ func runAgentCtx(parent context.Context, command, prompt, cwd string, live io.Wr
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", nil, AgentError(msg)
+		return "", usage, AgentError(msg)
 	}
 	if stream != nil {
-		if stream.result == nil || stream.failed {
+		if stream.result == nil || stream.failed || stream.codex && !stream.completed {
 			return "", stream.usage, AgentError("the agent ended without a result event")
 		}
 		return *stream.result, stream.usage, nil
@@ -335,7 +337,7 @@ Your analysis is shown to the user and copied to independent reviewers (other AI
 - Suggest subproblems only if the problem is too large to decide in one step.
 - Recommend one solution, backed by evidence quoted from the code (source as path:line), and list the other options you considered.
 - List the open points.
-- Keep an agreement board of the points that matter for the decision. Keep existing keys stable and add new keys for new points. For each reviewer who replied, record their position under positions[their name], keeping earlier positions. Reviewers are sent only the open and disputed points (settled ones are listed by key), so a reply that skips a point leaves that point's positions and status as they were. Status: agreed when every model that weighed in agrees, disputed when one disagrees, open when it needs more information, decided when a user note rules on it.
+- Keep an agreement board of the points that matter for the decision. Keep existing keys stable and add new keys for new points. For each reviewer who replied, record their position under positions[their name], keeping earlier positions. Reviewers are sent only the open and disputed points (settled ones are listed by key), so a reply that skips a point leaves that point's positions and status as they were. Status: agreed when every model that weighed in agrees, disputed when one disagrees, open when it needs more information, decided only when a user note explicitly starts with "Ruling on [KEY]" for that point. A saved Q/A answer alone is context, not a point ruling. If models agree after considering answers and there is no explicit ruling, use agreed, not decided. Never invent a user ruling or mark a point decided just because the user answered a question. Correct earlier decided statuses that lack an explicit ruling; do not carry that mistake into the new round.
 - Adopt a reviewer's suggestion when it is better, and say so. List what changed since the previous round in changes.
 
 End your answer with exactly one fenced %sjson block:

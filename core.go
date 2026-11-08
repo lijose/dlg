@@ -40,34 +40,40 @@ type ReplyRef struct {
 
 // StatusOut is the one-screen view of a problem: where it stands and who we wait for.
 type StatusOut struct {
-	ID         int64        `json:"id"`
-	Title      string       `json:"title"`
-	Status     string       `json:"status"`
-	Round      int          `json:"round"`
-	Points     int          `json:"points"`
-	Settled    int          `json:"settled"`
-	Disputed   int          `json:"disputed"`
-	Reviewers  []PeerStatus `json:"reviewers"`
-	Waiting    []string     `json:"waiting"` // handoff sent, no reply yet
-	ToSend     []string     `json:"to_send"` // nothing sent yet, or an update is ready
-	NewReplies int          `json:"new_replies"`
-	Replies    []ReplyRef   `json:"replies"`
-	Cost       *CostOut     `json:"cost,omitempty"`
+	UnansweredQuestions int          `json:"unanswered_questions"`
+	ID                  int64        `json:"id"`
+	Title               string       `json:"title"`
+	Status              string       `json:"status"`
+	Round               int          `json:"round"`
+	Points              int          `json:"points"`
+	Settled             int          `json:"settled"`
+	Disputed            int          `json:"disputed"`
+	Reviewers           []PeerStatus `json:"reviewers"`
+	Waiting             []string     `json:"waiting"` // handoff sent, no reply yet
+	ToSend              []string     `json:"to_send"` // nothing sent yet, or an update is ready
+	NewReplies          int          `json:"new_replies"`
+	Replies             []ReplyRef   `json:"replies"`
+	Cost                *CostOut     `json:"cost,omitempty"`
 }
 
 // CostLine sums the usage of some runs. Priced counts the runs that reported a cost, so a
 // total over runs without one (cursor-agent) is not mistaken for free.
 type CostLine struct {
-	Name         string  `json:"name,omitempty"`
-	Runs         int     `json:"runs"`
-	Priced       int     `json:"priced"`
-	Failed       int     `json:"failed,omitempty"`
-	CostUSD      float64 `json:"cost_usd"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CacheRead    int64   `json:"cache_read_tokens"`
-	CacheWrite   int64   `json:"cache_write_tokens"`
-	DurationMS   int64   `json:"duration_ms"`
+	Name            string  `json:"name,omitempty"`
+	Runs            int     `json:"runs"`
+	Priced          int     `json:"priced"`
+	Failed          int     `json:"failed,omitempty"`
+	CostUSD         float64 `json:"cost_usd"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	CacheRead       int64   `json:"cache_read_tokens"`
+	CacheWrite      int64   `json:"cache_write_tokens"`
+	ReasoningTokens int64   `json:"reasoning_output_tokens"`
+	ToolCalls       int64   `json:"tool_calls"`
+	Turns           int64   `json:"turns"`
+	Partial         int     `json:"partial_runs,omitempty"`
+	TokenRuns       int     `json:"token_runs"`
+	DurationMS      int64   `json:"duration_ms"`
 }
 
 type CostOut struct {
@@ -78,6 +84,9 @@ type CostOut struct {
 
 func (c *CostLine) add(u Usage, share int64, failed bool) {
 	c.Runs++
+	if u.TokensReported || u.InputTokens != 0 || u.OutputTokens != 0 {
+		c.TokenRuns++
+	}
 	if failed {
 		c.Failed++
 	}
@@ -90,6 +99,12 @@ func (c *CostLine) add(u Usage, share int64, failed bool) {
 	c.CacheRead += u.CacheRead / share
 	c.CacheWrite += u.CacheWrite / share
 	c.DurationMS += u.DurationMS / share
+	c.ReasoningTokens += u.ReasoningTokens / share
+	c.ToolCalls += u.ToolCalls / share
+	c.Turns += u.Turns / share
+	if u.Partial {
+		c.Partial++
+	}
 }
 
 // costOf totals the problem's "usage" audit events (failed runs included; a run shared by
@@ -199,6 +214,7 @@ func problemStatus(l *Ledger, pid int64) (*StatusOut, error) {
 		Reviewers: []PeerStatus{}, Waiting: []string{}, ToSend: []string{}, Replies: []ReplyRef{}}
 	latest, analysis, round := latestAnalysis(d)
 	out.Round = round
+	out.UnansweredQuestions = unansweredQuestions(d)
 	out.Cost = d.Cost
 	if analysis != nil {
 		out.Points = len(analysis.Points)

@@ -7,13 +7,19 @@ Full agent guide: AGENTS.md. Human docs: README.md.
 ## Commands (all inside a project with .decision-ledger/)
 
 - `dlg problems [--json]`: list problems
-- `dlg status [id] [--json]`: state, reviewers waiting, new replies
+- `dlg status [id] [--json]`: state, reviewers waiting, new replies; JSON also includes unanswered_questions
+- `dlg cost [id] [--json]`: reported cost and token usage for supported Claude/Cursor/Codex commands; unknown cost is not estimated
+- `dlg models [--refresh] [--json]`: available model presets
+- `dlg analyse <id> [--model KEY]`: run one primary analysis round
 - `dlg handoff <id> <to> [--json] [--peek]`: print the text a reviewer should answer
 - `dlg review <id> <author> [--file F]`: store a reply (stdin), warnings on stderr
 - `dlg note <id> [text]`: add a note
 - `dlg parse <review-id> [--json]`: per-point positions of a stored reply
 - `dlg run <id> <agent>`: opt-in; pipe the handoff to the agent's configured command and store its stdout as a review
 - `dlg config show | set-runner <agent> <command> | unset-runner <agent>`: runner setup (command line only)
+- `dlg config --global use <tool>` / `set-runner <identity> <command>`: reusable defaults, configured and approved by the user in a terminal
+- `dlg config approve-runners`: user approves inherited reviewer commands in the current project
+- `dlg config codex-folder <git|plain>`: user chooses whether standard read-only Codex analysis requires Git in this project
 - `dlg mcp`: MCP stdio server with the same operations (dlg_problems, dlg_status, dlg_handoff, dlg_review, dlg_note, dlg_parse)
 - `dlg serve`: local UI and HTTP API on 127.0.0.1:8765 (writes need header `X-Ledger: 1`)
 
@@ -37,3 +43,20 @@ OPEN: questions (optional)
 ## Limits
 
 Agents never select, approve or resolve; only the user does.
+Agent commands and workdir are configured by the user, not by agents or HTTP.
+The guided UI requires explicit primary setup; reviewers are optional.
+See README.md for the current Codex implementation-command compatibility note.
+
+The UI preserves browser drafts across restarts, distinguishes drafts from saved/included input,
+and recommends the next action without deciding for the user. Activity can compare two saved
+analysis rounds. Workspace tabs support arrows/Home/End and preserve field focus on refresh.
+Browser drafts are local to the browser profile and server origin, not ledger exports.
+Users can explicitly reuse a saved answer as a point ruling; agents must not create
+those links themselves. A model-generated decided status alone never settles a point.
+Next-step guidance is also shown on Reviews after automatic rounds.
+Final proposals render as Markdown in a compact card and reading dialog. Copy Markdown
+preserves the original; settled-point badges come from ledger state. Rendering is local,
+with raw HTML and image loading disabled.
+A newer final proposal that differs from the approved selection is flagged in the UI
+and in full problem detail as approval_change. Implementation keeps using the approved
+selection until the user explicitly selects and approves a replacement.

@@ -28,6 +28,12 @@ func TestMain(m *testing.M) {
 		return
 	case "empty":
 		return
+	case "codex-usage":
+		fakeCodexUsage()
+		return
+	case "codex-catalog":
+		fakeCodexCatalog()
+		return
 	}
 	os.Exit(m.Run())
 }
@@ -558,7 +564,7 @@ func TestCommandSettersWithoutTerminal(t *testing.T) {
 func TestGlobalSettersRefuseStrayYes(t *testing.T) {
 	configProject(t)
 	for _, args := range [][]string{{"set-runner", "codex", "--yes"}, {"set-primary", "claude", "claude -p", "--yes"},
-		{"set-runner", "--yes", "codex"}, {"set-primary", "--yes", "claude", "claude -p"}} {
+		{"set-runner", "--yes", "codex"}} {
 		if err := cmdConfig(append([]string{"--global"}, args...)); err == nil {
 			t.Fatalf("--global %v: no error", args)
 		}
@@ -699,7 +705,7 @@ func TestWithStreaming(t *testing.T) {
 		"claude -p --output-format text":       "claude -p --output-format text", // the user's choice wins
 		"claude -p --output-format=json":       "claude -p --output-format=json",
 		"claude --permission-mode acceptEdits": "claude --permission-mode acceptEdits", // not print mode
-		"codex exec":                           "codex exec",
+		"codex exec":                           "codex exec --json",
 	} {
 		args, _ := splitCommand(in)
 		if got := strings.Join(withStreaming(args), " "); got != want {
@@ -945,8 +951,8 @@ func TestTemplatesVerified(t *testing.T) {
 
 func TestGlobalConfigLayersUnderProjectSettings(t *testing.T) {
 	t.Setenv("DLG_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-	must(t, cmdGlobalConfig([]string{"set-primary", "claude", "claude -p"}))
-	must(t, cmdGlobalConfig([]string{"set-runner", "cursor", "cursor-agent -p"}))
+	must(t, writeGlobalConfig(D{"primary_name": "claude", "primary_command": "claude -p", "implement_command": "claude -p"}))
+	must(t, writeGlobalConfig(D{"secondary_commands": map[string]string{"cursor": "cursor-agent -p"}}))
 	l := newLedger(t)
 	s, err := l.settings()
 	must(t, err)

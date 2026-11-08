@@ -116,6 +116,7 @@ type Settings struct {
 	PrimaryCommand    string   `json:"primary_command"`
 	ImplementCommand  string   `json:"implement_command"`
 	Workdir           string   `json:"workdir"`
+	CodexPlainFolder  string   `json:"codex_plain_folder"` // approved workdir for read-only analysis without Git
 	SecondaryNames    []string `json:"secondary_names"`
 	SecondaryWithCode []string `json:"secondary_with_code"` // reviewers that can open the repository themselves (e.g. an IDE)
 	LastProblemID     *int64   `json:"last_problem_id"`
@@ -130,16 +131,17 @@ type Settings struct {
 	DefaultImplementModel string        `json:"default_implement_model"` // preset key; "" = the base command
 	CycleRounds           int           `json:"cycle_rounds"`            // auto rounds per click in the UI; 0 = 1
 	// Reviewer name -> default model id for its runner (picked in the UI from the CLI's list).
-	ReviewModels map[string]string `json:"review_models"`
+	ReviewModels   map[string]string `json:"review_models"`
+	ReviewerLabels map[string]string `json:"reviewer_labels"` // display-only preferences for manual reviewers
 }
 
 // cliOnlySettings are never writable over HTTP: they make the ledger execute shell commands.
 var cliOnlySettings = []string{"secondary_commands", "runner_confirmed", "models", "model_list_command",
-	"primary_command", "implement_command", "workdir"}
+	"primary_command", "implement_command", "workdir", "codex_plain_folder"}
 
 func defaultSettings() Settings {
-	return Settings{PrimaryName: "codex", PrimaryCommand: "codex exec", ImplementCommand: "codex exec --full-auto",
-		SecondaryNames: []string{"claude", "gemini"}}
+	return Settings{PrimaryName: "codex", PrimaryCommand: "codex exec", ImplementCommand: "codex exec --sandbox workspace-write",
+		SecondaryNames: []string{}}
 }
 
 // LedgerError is a request that breaks a ledger rule.
@@ -540,19 +542,20 @@ func (l *Ledger) ancestors(problemID int64) ([]Row, error) {
 }
 
 type Detail struct {
-	Problem         Row       `json:"problem"`
-	Status          string    `json:"status"`
-	Ancestors       []Row     `json:"ancestors"`
-	Children        []Row     `json:"children"`
-	Alternatives    []Row     `json:"alternatives"`
-	GeneralEvidence []Row     `json:"general_evidence"`
-	Contributions   []Row     `json:"contributions"`
-	Disagreements   []Row     `json:"disagreements"`
-	Selection       Row       `json:"selection"`
-	Approval        Row       `json:"approval"`
-	Events          []Row     `json:"events"`
-	Handoffs        []Handoff `json:"handoffs,omitempty"` // filled by the server for the UI
-	Cost            *CostOut  `json:"cost,omitempty"`     // likewise
+	Problem         Row             `json:"problem"`
+	Status          string          `json:"status"`
+	Ancestors       []Row           `json:"ancestors"`
+	Children        []Row           `json:"children"`
+	Alternatives    []Row           `json:"alternatives"`
+	GeneralEvidence []Row           `json:"general_evidence"`
+	Contributions   []Row           `json:"contributions"`
+	Disagreements   []Row           `json:"disagreements"`
+	Selection       Row             `json:"selection"`
+	Approval        Row             `json:"approval"`
+	ApprovalChange  *ApprovalChange `json:"approval_change,omitempty"`
+	Events          []Row           `json:"events"`
+	Handoffs        []Handoff       `json:"handoffs,omitempty"` // filled by the server for the UI
+	Cost            *CostOut        `json:"cost,omitempty"`     // likewise
 }
 
 func (l *Ledger) problemDetail(problemID int64) (*Detail, error) {
@@ -591,6 +594,7 @@ func (l *Ledger) problemDetail(problemID int64) (*Detail, error) {
 		}
 	}
 	d.Alternatives = alternatives
+	d.ApprovalChange = approvalChange(d)
 	if d.Ancestors, err = l.ancestors(problemID); err != nil {
 		return nil, err
 	}

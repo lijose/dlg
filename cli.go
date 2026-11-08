@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -37,16 +38,17 @@ const helpText = `usage: dlg <command> [flags]
   serve [--port N] [--no-browser]   start the local UI
   problems [--json]                 list problems
   status [id] [--json]              where a problem stands and who it is waiting for
-  cost [id] [--json]                what the agents' runs cost, per agent and model
+  cost [id] [--json]                reported cost and token usage, per agent and model
   handoff <id> <to> [--json] [--peek]
                                     print the next text for a reviewer (marks it sent unless --peek)
   review <id> <author> [--file F]   store a reviewer's reply, read from stdin or F
   note <id> [text]                  add a note (text or stdin)
   parse <review-id> [--json]        extract per-point positions from a stored reply
-  run <id> <agent> [--yes] [--timeout D]
+  run <id> <agent> [--yes] [--timeout D] [--model ID]
                                     pipe the handoff to the agent's configured command, store its stdout as a review
   config show | use <agent> | set-primary <name> <command> [implement-command]
          set-workdir <dir> | set-runner <agent> [command] | unset-runner <agent>
+         codex-folder <git|plain>   choose whether standard Codex analysis requires Git here
                                     agent commands are set only here: dlg prints what it will store
                                     and asks Allow? [y/N] (--yes right after the subcommand when not on a terminal)
          add-model <key> <label> <context-label> [args...] | remove-model <key>
@@ -56,6 +58,10 @@ const helpText = `usage: dlg <command> [flags]
                                     dlg config add-model fast "Fast" "200k" --model opus --context 1m --effort high
                                     raw arguments go after --: add-model fast "Fast" "200k" -- --model my-model-id
                                     (list command prints key<TAB>label<TAB>context<TAB>args per line)
+  config --global show | use <agent> | set-primary <name> <command> [implement-command]
+         set-secondaries <name>... | set-runner <agent> <command> | unset-runner <agent>
+                                    reusable defaults; executable settings require terminal approval
+  config approve-runners           approve inherited reviewer commands for this project
   models [--refresh] [--json]       list model presets
   analyse <id> [--model KEY]        run one analysis round with a preset
   mcp                               serve the same operations over MCP (stdio)
@@ -542,6 +548,13 @@ func checkName(name string) error {
 func knownAgent(name string) (primary, implement string, ok bool) {
 	for _, a := range knownAgents {
 		if a.name == name {
+			if name == "cursor" {
+				if _, err := exec.LookPath("cursor-agent"); err != nil {
+					if _, err := exec.LookPath("agent"); err == nil {
+						return strings.ReplaceAll(a.primary, "cursor-agent", "agent"), strings.ReplaceAll(a.implement, "cursor-agent", "agent"), true
+					}
+				}
+			}
 			return a.primary, a.implement, true
 		}
 	}
@@ -602,6 +615,20 @@ func cmdSetCommand(l *Ledger, cfg Settings, args []string) error {
 			return err
 		}
 		fields = append(fields, [2]string{"workdir", dir})
+	case args[0] == "codex-folder" && len(pos) == 1:
+		switch pos[0] {
+		case "plain":
+			dir := resolvedWorkdir(cfg.Workdir)
+			if dir == "" {
+				return ledgerErr("set an existing project working directory first with dlg config set-workdir")
+			}
+			fmt.Fprintln(os.Stderr, "Standard Codex analysis in this folder will use --skip-git-repo-check --sandbox read-only.")
+			fields = append(fields, [2]string{"codex_plain_folder", dir})
+		case "git":
+			fields = append(fields, [2]string{"codex_plain_folder", ""})
+		default:
+			return usageError("usage: dlg config codex-folder <git|plain>")
+		}
 	case args[0] == "set-runner" && len(pos) >= 1:
 		return setRunner(l, cfg, pos)
 	default:
@@ -614,6 +641,9 @@ func cmdSetCommand(l *Ledger, cfg Settings, args []string) error {
 		return errors.New("not confirmed; nothing stored")
 	}
 	values := D{}
+	if args[0] == "use" || args[0] == "set-primary" {
+		values = D{"default_analyse_model": "", "default_implement_model": "", "model_list_command": "", "models": []ModelPreset{}}
+	}
 	for _, f := range fields {
 		values[f[0]] = f[1]
 	}
@@ -660,10 +690,11 @@ func setRunner(l *Ledger, cfg Settings, pos []string) error {
 
 const configUsage = "usage: dlg config [--global] show | use <agent> | set-primary <name> <command> [implement-command]\n" +
 	"       dlg config set-workdir <dir> | set-runner <agent> [command] | unset-runner <agent>\n" +
-	"       (use, set-primary, set-workdir and set-runner take --yes right after the subcommand)\n" +
+	"       dlg config codex-folder <git|plain>\n" +
+	"       (command settings take --yes right after the subcommand for non-terminal use)\n" +
 	"       dlg config add-model <key> <label> <context-label> [args...] | remove-model <key>\n" +
 	"       dlg config set-model-list <command> | unset-model-list\n" +
-	"       dlg config set-default-model <analyse|implement> <key|none> | init-models [claude|codex]"
+	"       dlg config set-default-model <analyse|implement> <key|none> | init-models [claude|codex] | approve-runners"
 
 // cmdConfig edits the settings that only the command line may change.
 func cmdConfig(args []string) error {
@@ -694,19 +725,20 @@ func cmdConfig(args []string) error {
 	switch {
 	case args[0] == "show" && len(args) == 1:
 		return printJSON(cfg)
-	case slices.Contains([]string{"use", "set-primary", "set-workdir", "set-runner"}, args[0]):
+	case slices.Contains([]string{"use", "set-primary", "set-workdir", "set-runner", "codex-folder"}, args[0]):
 		return cmdSetCommand(l, cfg, args)
 	case args[0] == "unset-runner" && len(args) == 2:
 		delete(runners, args[1])
 	case args[0] == "add-model" && len(args) >= 4:
 		m, err := addModelPreset(args[1:])
+		m.Agent = toolOf(cfg.PrimaryCommand)
 		if err != nil {
 			return err
 		}
 		if _, err := splitCommand(m.Args); err != nil {
 			return err
 		}
-		agent := agentOf(cfg.PrimaryCommand)
+		agent := toolOf(cfg.PrimaryCommand)
 		warnings, err := validatePreset(agent, m)
 		if err != nil {
 			return err
@@ -716,6 +748,24 @@ func cmdConfig(args []string) error {
 			m.CLIVersion = cliVersion(agent)
 		}
 		_, err = l.updateSettings(D{"models": withPreset(cfg.Models, m)}, "user")
+		return err
+	case args[0] == "approve-runners" && len(args) == 1:
+		fields := [][2]string{}
+		approved := append([]string{}, cfg.RunnerConfirmed...)
+		for _, name := range cfg.SecondaryNames {
+			if command := cfg.SecondaryCommands[name]; command != "" && !slices.Contains(approved, command) {
+				fields = append(fields, [2]string{name, command})
+				approved = append(approved, command)
+			}
+		}
+		if len(fields) == 0 {
+			fmt.Println("No pending reviewer runners.")
+			return nil
+		}
+		if !confirmSetting("Approve these reviewer commands for this project:", fields, false) {
+			return ledgerErr("not approved; nothing stored")
+		}
+		_, err := l.updateSettings(D{"runner_confirmed": approved}, "user")
 		return err
 	case args[0] == "set-default-model":
 		return cmdSetDefaultModel(l, cfg, args[1:])

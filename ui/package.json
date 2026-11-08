@@ -1,0 +1,12 @@
+{
+  "name": "dlg-ui-checks",
+  "private": true,
+  "scripts": {
+    "test": "node workspace.test.cjs",
+    "vendor:markdown": "node vendor-markdown.cjs"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.12",
+    "markdown-it": "15.0.3"
+  }
+}
